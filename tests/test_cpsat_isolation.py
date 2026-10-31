@@ -16,9 +16,9 @@ def _in_process(monkeypatch):
 
 def test_isolated_matches_in_process(timed_batch, monkeypatch):
     b = timed_batch(3)
-    isolated = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+    isolated = plan_cpsat(b, time_limit=0.3, deterministic=True, hint="serial")
     _in_process(monkeypatch)
-    local = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+    local = plan_cpsat(b, time_limit=0.3, deterministic=True, hint="serial")
     assert isolated.status in ("optimal", "feasible") and validate_plan(isolated, b) == []
     assert isolated.start == local.start and isolated.bindings == local.bindings
     assert isolated.solver_status == local.solver_status
@@ -50,9 +50,9 @@ def _crash(monkeypatch, tmp_path, times, failure=_ABORT):
 
 def test_child_crash_is_retried(timed_batch, monkeypatch, tmp_path):
     b = timed_batch(2)
-    expected = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+    expected = plan_cpsat(b, time_limit=0.3, deterministic=True, hint="serial")
     _crash(monkeypatch, tmp_path, 2)
-    p = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+    p = plan_cpsat(b, time_limit=0.3, deterministic=True, hint="serial")
     assert len(list(tmp_path.iterdir())) == 2          # two aborted attempts, third solved
     assert p.start == expected.start and p.bindings == expected.bindings
     assert p.status == expected.status and validate_plan(p, b) == []
@@ -62,7 +62,7 @@ def test_all_attempts_crash(timed_batch, monkeypatch, tmp_path):
     b = timed_batch(2)
     _crash(monkeypatch, tmp_path, 99)
     with pytest.warns(RuntimeWarning, match="heap!"):
-        p = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+        p = plan_cpsat(b, time_limit=0.3, deterministic=True, hint="serial")
     assert len(list(tmp_path.iterdir())) == 3
     assert (p.status, p.solver_status) == ("no_solution", "CRASHED")
     assert p.blocks == {} and p.start == {} and p.bindings == {}
@@ -72,16 +72,17 @@ def test_child_error_raises_without_retry(timed_batch, monkeypatch, tmp_path):
     """A non-zero exit that is not a signal is a deterministic Python-level failure."""
     _crash(monkeypatch, tmp_path, 99, failure=_EXIT_1)
     with pytest.raises(RuntimeError, match="no module named nonsense"):
-        plan_cpsat(timed_batch(2), time_limit=5, deterministic=True, hint="serial")
+        plan_cpsat(timed_batch(2), time_limit=0.3, deterministic=True, hint="serial")
     assert len(list(tmp_path.iterdir())) == 1
 
 
+@pytest.mark.slow
 def test_child_timeout_is_retried(timed_batch, monkeypatch, tmp_path):
     b = timed_batch(2)
-    expected = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+    expected = plan_cpsat(b, time_limit=0.3, deterministic=True, hint="serial")
     _crash(monkeypatch, tmp_path, 1, failure=_HANG)
-    monkeypatch.setattr(cpsat, "_child_timeout", lambda time_limit: 5.0)
-    p = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+    monkeypatch.setattr(cpsat, "_child_timeout", lambda time_limit: 15.0)   # roomy: slow tests run in parallel
+    p = plan_cpsat(b, time_limit=0.3, deterministic=True, hint="serial")
     assert len(list(tmp_path.iterdir())) == 1          # first attempt hung, second solved
     assert p.start == expected.start and p.bindings == expected.bindings
 
@@ -93,7 +94,7 @@ def test_child_timeout_default():
 def test_corrupt_child_result_is_a_failed_attempt(timed_batch, monkeypatch):
     monkeypatch.setattr(cpsat, "_CHILD_CMD", [sys.executable, "-c", "print('not a pickle')"])
     with pytest.warns(RuntimeWarning):
-        p = plan_cpsat(timed_batch(1), time_limit=5, deterministic=True, hint="serial")
+        p = plan_cpsat(timed_batch(1), time_limit=0.3, deterministic=True, hint="serial")
     assert (p.status, p.solver_status) == ("no_solution", "CRASHED")
 
 
@@ -105,7 +106,7 @@ def test_model_invalid_raises_through_child(timed_batch, monkeypatch):
         self.m.Proto().merge_text_format('variables { name: "bad" domain: 5 domain: 1 }')
     monkeypatch.setattr(cpsat._Model, "objective", objective)
     with pytest.raises(RuntimeError, match="MODEL_INVALID"):
-        plan_cpsat(timed_batch(1), time_limit=5, deterministic=True, hint=None)
+        plan_cpsat(timed_batch(1), time_limit=0.3, deterministic=True, hint=None)
 
 
 def test_non_deterministic_stays_in_process(timed_batch, monkeypatch):

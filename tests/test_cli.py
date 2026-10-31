@@ -16,6 +16,7 @@ def _run(*args):
                           capture_output=True, text=True, cwd=ROOT)
 
 
+@pytest.mark.slow
 def test_cli_end_to_end(tmp_path):
     out = tmp_path / "r.html"
     r = _run("examples/workcell.yaml", "examples/pcr_batch.py",
@@ -69,6 +70,7 @@ def _write(path, text):
     return str(path)
 
 
+@pytest.mark.slow
 def test_success_criterion_pcr10():
     from workcell.run import run_files
     sess = run_files(ROOT / "examples/workcell.yaml", ROOT / "examples/pcr_batch.py",
