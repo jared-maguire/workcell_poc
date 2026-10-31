@@ -21,8 +21,9 @@ def _is_park(block) -> bool:
     return block.inserted and block.kind == "park"
 
 
-def _compare(plan: Plan, batch: CompiledBatch, bid: str) -> list[str]:
-    """Check one plan block against its compiled block bound under the plan's bindings."""
+def _compare(plan: Plan, batch: CompiledBatch, bid: str, check_durations: bool) -> list[str]:
+    """Check one plan block against its compiled block bound under the plan's bindings
+    (instruction durations too, unless `check_durations` is False)."""
     comp, got = batch.block(bid), plan.blocks[bid]
     try:
         want = comp.bind(plan.bindings.get(comp.workflow, {}))
@@ -40,12 +41,17 @@ def _compare(plan: Plan, batch: CompiledBatch, bid: str) -> list[str]:
             g.plate != w.plate or g.dst != w.dst or (g.src != w.src and w.plate not in parked)
             for g, w in zip(got.moves, want.moves)):
         errs.append(f"block {bid} moves differ from compiled moves")
-    if want.kind in ("op", "scan") and got.instructions != want.instructions:
+    def shape(ins):
+        return [(i.instrument, i.op, i.args) + ((i.duration,) if check_durations else ())
+                for i in ins]
+    if want.kind in ("op", "scan") and shape(got.instructions) != shape(want.instructions):
         errs.append(f"block {bid} instructions differ from compiled instructions")
     return errs
 
 
-def validate_plan(plan: Plan, batch: CompiledBatch) -> list[str]:
+def validate_plan(plan: Plan, batch: CompiledBatch, check_durations: bool = True) -> list[str]:
+    """Errors in `plan` (empty if valid). With `check_durations=False` (a live as-run plan,
+    whose blocks carry actual durations) instruction durations may differ from compiled."""
     errors: list[str] = []
     compiled = {b.id for b in batch.all_blocks()}
     scheduled = [b for b in plan.start if b in plan.blocks]
@@ -74,7 +80,7 @@ def validate_plan(plan: Plan, batch: CompiledBatch) -> list[str]:
     # plan blocks must match the compiled blocks
     for bid in plan.blocks:
         if bid in compiled:
-            errors += _compare(plan, batch, bid)
+            errors += _compare(plan, batch, bid, check_durations)
 
     # moves must use real nests
     nests = batch.workcell.nests()

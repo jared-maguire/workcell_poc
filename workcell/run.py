@@ -31,6 +31,7 @@ class Session:
     runs: list[RunResult]
     workcell_source: str
     batch_source: str
+    live: dict | None = None        # live-run payload for the report (v2)
 
 
 def run_session(workcell: Workcell, specs, modes: list[str], time_limit: float,
