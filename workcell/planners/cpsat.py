@@ -14,7 +14,7 @@ from ortools.sat.python import cp_model
 
 from workcell.idle import hold_chains
 from workcell.ir import Block, CompiledBatch, resolve
-from workcell.compiler import AmbiguousRoute
+from workcell.compiler import AmbiguousRoute, route
 from workcell.parking import (park_durations, park_pair, park_pair_instructions,
                               parking_spots, plan_parks)
 from workcell.plan import Plan, bind_batch
@@ -72,10 +72,15 @@ def serial_hint(batch: CompiledBatch) -> tuple[dict[str, int], dict[str, dict[st
     return, else the earliest compiled. Every var takes its first candidate. Valid for
     workflows whose returns free their nests before the next workflow needs them (e.g. PCR);
     not guaranteed otherwise. Returns (starts, bindings); raises ValueError if a workflow
-    has no ready block (a dependency cycle or a dep outside the workflow)."""
+    has no ready block (a dependency cycle or a dep outside the workflow).
+    With several arms, a var moved into takes instead the candidate nearest the plate (fewest
+    arm hops; ties rotate by workflow), so the warm start isn't relays everywhere."""
+    wc = batch.workcell
+    near = len(wc.of_type("arm")) > 1
     t, starts, bindings = 0, {}, {}
-    for wf in batch.workflows:
+    for w, wf in enumerate(batch.workflows):
         bindings[wf.id] = {var: cands[0] for var, cands in wf.variables.items()}
+        chosen: dict[str, str] = {}
         index = {b.id: i for i, b in enumerate(wf.blocks)}
         todo = list(wf.blocks)
         while todo:
@@ -84,8 +89,17 @@ def serial_hint(batch: CompiledBatch) -> tuple[dict[str, int], dict[str, dict[st
                 raise ValueError(f"serial_hint: no ready block in workflow {wf.id!r} "
                                  f"(remaining: {[b.id for b in todo]})")
             nxt = min(ready, key=lambda b: (b.kind != "return", index[b.id]))
+            if near:
+                for m in nxt.moves:
+                    var = _var(m.dst)
+                    if var and var not in chosen:
+                        here = wc.nest_owner(resolve(m.src, chosen))
+                        cands = wf.variables[var]
+                        chosen[var] = min(cands, key=lambda c: (
+                            len(route(wc, here, c)), (cands.index(c) - w) % len(cands)))
+                bindings[wf.id].update(chosen)
             starts[nxt.id] = t
-            t += nxt.duration
+            t += nxt.bind(bindings[wf.id]).duration if near else nxt.duration
             todo.remove(nxt)
     return starts, bindings
 

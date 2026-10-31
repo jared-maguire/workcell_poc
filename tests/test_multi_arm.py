@@ -102,3 +102,19 @@ def test_replan_with_unmodelled_hint_park(two_arm):
                      hint_parks={"pcr_live-0/15": "hotel1", "pcr_live-1/15": "hotel2"})
     new = replan_cpsat(b, st, time_limit=1, max_idle_hold=300)
     assert new.finished and validate_plan(new, b) == []
+
+
+def test_serial_hint_picks_near_candidates(two_arm):
+    """Multi-arm: the serial warm start binds each choice to the candidate nearest the plate
+    (fewest arm hops), so the solver doesn't start from relays everywhere; it stays valid."""
+    from conftest import TWO_ARM
+    from workcell.config import parse_workcell
+    from workcell.plan import Plan, bind_batch
+    from workcell.planners.cpsat import serial_hint
+    insts = sorted(TWO_ARM["instruments"], key=lambda i: i["id"] != "tc2")   # tc2 first
+    b = compile_batch(parse_workcell({**TWO_ARM, "instruments": insts}), specs(2))
+    assert b.workflows[0].variables["?tc0"][0] == "tc2"
+    starts, binds = serial_hint(b)
+    assert all(v["?tc0"] == "tc1" for v in binds.values())       # stamper is in arm1's zone
+    p = Plan("serial", bind_batch(b, binds), starts, binds, "feasible")
+    assert validate_plan(p, b) == []
