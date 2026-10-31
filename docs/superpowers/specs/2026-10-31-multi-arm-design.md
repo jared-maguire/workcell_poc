@@ -9,8 +9,8 @@ between instruments of different arms is relayed through handoff spots. The plan
 to use any instrument; when its choice changes the route, it sees that choice's time and arms.
 
 Decided with Jared (2026-10-31): planner free to choose across zones; zones implicit from reach;
-arms overlap only at handoffs; no duplicating single instruments (sealer, peeler, centrifuge,
-plate reader) just for an arm's sake — plates cross over instead. "Let's go with that and see how
+arms overlap only at handoffs; no duplicating single instruments (sealer, peeler, centrifuge)
+just for an arm's sake — plates cross over instead; plate readers are duplicated (one per zone). "Let's go with that and see how
 it works out."
 
 ## Workcell config
@@ -51,8 +51,8 @@ it works out."
 ## Demo
 
 `examples/libprep_2arm.yaml`: arm1 (library prep) reaches storage, hotel1, scanner, stamper,
-tc1, tc2, lh1, hs1, sealer, peeler; arm2 (capture) reaches hotel2, dry1, lh2, hs2, tc3, tc4,
-centrifuge, plate reader; one handoff spot `ho1` (2 positions) shared. Three batches of
+tc1, tc2, lh1, hs1, sealer, peeler, read1; arm2 (capture) reaches hotel2, dry1, lh2, hs2, tc3,
+tc4, centrifuge, read2; one handoff spot `ho1` (2 positions) shared. Three batches of
 `examples/libprep_capture.py`, live, report `docs/reports/libprep3_2arm_live.html`; compare with
 the single-arm demo (makespan, arm busy time, crossings).
 
