@@ -58,3 +58,27 @@ def timed_batch(workcell_small):
     def make(n):
         return compile_batch(workcell_small, load_batch(EXAMPLES / "pcr_live.py")[0][:n])
     return make
+
+
+# Two arms: arm1 reaches storage, hotel1, scanner, stamper, tc1; arm2 reaches tc2 and hotel2;
+# they share only the handoff spot ho1.
+TWO_ARM = {
+    **SMALL,
+    "instruments": [
+        {"id": "arm1", "type": "arm", "reach": ["store1", "hotel1", "scan1", "stamp1", "tc1", "ho1"]},
+        {"id": "arm2", "type": "arm", "reach": ["tc2", "hotel2", "ho1"]},
+        {"id": "store1", "type": "storage", "slots": 2000},
+        {"id": "hotel1", "type": "hotel", "slots": 50},
+        {"id": "hotel2", "type": "hotel", "slots": 50},
+        {"id": "scan1", "type": "barcode_scanner"},
+        {"id": "stamp1", "type": "head_stamper"},
+        {"id": "tc1", "type": "thermocycler"},
+        {"id": "tc2", "type": "thermocycler"},
+        {"id": "ho1", "type": "handoff", "slots": 2},
+    ],
+}
+
+
+@pytest.fixture
+def two_arm():
+    return parse_workcell(TWO_ARM)

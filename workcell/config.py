@@ -12,7 +12,8 @@ STEP_TYPES = frozenset({"liquid_handler", "heated_shaker", "plate_sealer", "plat
 # Instrument types with two plate positions, `<id>.src` and `<id>.dst`.
 TWO_POSITION_TYPES = frozenset({"head_stamper", "liquid_handler"})
 INSTRUMENT_TYPES = frozenset(
-    {"arm", "storage", "hotel", "barcode_scanner", "head_stamper", "thermocycler"} | STEP_TYPES
+    {"arm", "storage", "hotel", "handoff", "barcode_scanner", "head_stamper", "thermocycler"}
+    | STEP_TYPES
 )
 
 
@@ -30,6 +31,7 @@ class Instrument:
     id: str
     type: str
     slots: int | None = None
+    reach: frozenset[str] | None = None     # arms: instruments it can reach (None = all)
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,8 @@ class Workcell:
                 if slots is None:
                     slots = UNLIMITED_HOTEL_SLOTS if inst.type == "hotel" else 1
                 out[inst.id] = Nest(inst.id, inst.id, slots)
+            elif inst.type == "handoff":
+                out[inst.id] = Nest(inst.id, inst.id, inst.slots or 1)
             elif inst.type in TWO_POSITION_TYPES:
                 for suffix in ("src", "dst"):
                     nid = f"{inst.id}.{suffix}"
@@ -80,6 +84,11 @@ class Workcell:
 
     def nest_owner(self, nest_id: str) -> str:
         return nest_id.split(".", 1)[0]
+
+    def arms_reaching(self, instrument: str) -> list[str]:
+        """Arms that can reach `instrument` (an arm without a reach list reaches everything)."""
+        return sorted(a for a in self.of_type("arm")
+                      if self.instruments[a].reach is None or instrument in self.instruments[a].reach)
 
     def of_type(self, t: str) -> list[str]:
         return [i.id for i in self.instruments.values() if i.type == t]
@@ -127,7 +136,9 @@ def parse_workcell(data: dict) -> Workcell:
             raise ConfigError(f"duplicate instrument id {iid!r}")
         if itype == "storage" and raw.get("slots") is None:
             raise ConfigError(f"storage {iid!r} needs 'slots'")
-        instruments[iid] = Instrument(iid, itype, raw.get("slots"))
+        reach = raw.get("reach")
+        instruments[iid] = Instrument(iid, itype, raw.get("slots"),
+                                      frozenset(reach) if reach is not None else None)
 
     plates: dict[str, Plate] = {}
 
@@ -154,7 +165,44 @@ def parse_workcell(data: dict) -> Workcell:
 
     durations = dict(data.get("durations") or {"default": 1})
     failures = [_failure(f, f"failure entry {n}") for n, f in enumerate(data.get("failures") or [])]
-    return Workcell(instruments, plates, durations, failures)
+    wc = Workcell(instruments, plates, durations, failures)
+    _check_reach(wc)
+    return wc
+
+
+def _check_reach(wc: Workcell) -> None:
+    """Arms only overlap at handoff spots: every other instrument is reached by exactly one
+    arm, and the arms are connected through handoffs."""
+    arms = wc.of_type("arm")
+    if all(wc.instruments[a].reach is None for a in arms):
+        return
+    for a in arms:
+        for name in sorted(wc.instruments[a].reach or ()):
+            if name not in wc.instruments:
+                raise ConfigError(f"arm {a!r} reach names unknown instrument {name!r}")
+            if wc.instruments[name].type == "arm":
+                raise ConfigError(f"arm {a!r} reach names another arm {name!r}")
+    for iid, inst in wc.instruments.items():
+        if inst.type == "arm":
+            continue
+        reachers = wc.arms_reaching(iid)
+        if not reachers:
+            raise ConfigError(f"instrument {iid!r} is reached by no arm")
+        if len(reachers) > 1 and inst.type != "handoff":
+            raise ConfigError(f"instrument {iid!r} is reached by more than one arm "
+                              f"({', '.join(reachers)}); only handoff spots may be shared")
+    seen, todo = {arms[0]}, [arms[0]]
+    while todo:
+        a = todo.pop()
+        for h in wc.of_type("handoff"):
+            if a in wc.arms_reaching(h):
+                for b in wc.arms_reaching(h):
+                    if b not in seen:
+                        seen.add(b)
+                        todo.append(b)
+    if len(seen) != len(arms):
+        raise ConfigError(f"arms {', '.join(sorted(set(arms) - seen))} do not connect to "
+                          f"{arms[0]} through handoff spots")
 
 
 def load_workcell(path: str | Path) -> Workcell:

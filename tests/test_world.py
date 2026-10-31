@@ -101,3 +101,20 @@ def test_step_ok(lab):
     w.apply(I("lh1", "magnet_wash", plates=["E0001"]))
     with pytest.raises(InstrumentError, match="not in lh1"):
         w.apply(I("lh1", "pool", plates=["S0001", "E0001"]))
+
+
+def test_move_out_of_reach(two_arm):
+    w = World(two_arm, {"S0001": "store1"})
+    w.apply(I("store1", "retrieve", plate="S0001"))
+    with pytest.raises(InstrumentError, match="tc2 out of reach of arm1"):
+        w.apply(I("arm1", "move", plate="S0001", src="store1", dst="tc2"))
+
+
+def test_relay_through_handoff(two_arm):
+    w = World(two_arm, {"S0001": "store1"})
+    for i in [I("store1", "retrieve", plate="S0001"),
+              I("arm1", "move", plate="S0001", src="store1", dst="ho1"),
+              I("tc2", "open_door"),
+              I("arm2", "move", plate="S0001", src="ho1", dst="tc2")]:
+        w.apply(i)
+    assert w.location("S0001") == "tc2"
