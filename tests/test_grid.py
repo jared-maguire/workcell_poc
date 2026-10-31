@@ -68,3 +68,11 @@ def test_window_live_completes(timed_batch):
     assert any(e.reason == "horizon" for e in r.replans)
     from workcell.live.session import as_run_plan
     assert validate_plan(as_run_plan(b, r), b, check_durations=False) == []
+
+
+def test_window_more_workflows_than_thermocyclers(timed_batch):
+    """4 PCRs, 2 thermocyclers, 1 h window: two plates sit in the thermocyclers past the
+    window (open stays) and the other two can only be placed after that — still feasible."""
+    b = timed_batch(4)
+    p = plan_cpsat(b, time_limit=0.5, deterministic=True, hint="serial", grid=10, window=3600)
+    assert p.finished and p.partial and validate_plan(p, b) == []

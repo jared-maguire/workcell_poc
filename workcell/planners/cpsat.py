@@ -202,6 +202,13 @@ class _Model:
         self._borrows()
         self._gaps()
 
+    def _open_end(self, start):
+        """End of a stay/borrow closed outside the window: `open_end`, or its own start if it
+        begins later (such blocks are cut from the plan anyway)."""
+        e = self.m.NewIntVar(0, 2 * self.horizon, "")
+        self.m.AddMaxEquality(e, [start, self.open_end])
+        return e
+
     def q(self, seconds: int) -> int:
         """Seconds -> model units, rounded up (durations, `now`)."""
         return -(-seconds // self.g)
@@ -423,8 +430,8 @@ class _Model:
                     if d.id in self.inc:
                         self.m.Add(self.start[d.id] >= self.end[a.id])
                         out = self.leave.get(d.id, self.start[d.id])  # parked: leaves at park start
-                    else:
-                        out = self.open_end         # removed after the window: open stay
+                    else:                           # removed after the window: open
+                        out = self._open_end(self.start[a.id])
                     for nest, lit in self._choices(wf.id, mv.dst):
                         if nest in skip:
                             continue
@@ -444,7 +451,7 @@ class _Model:
                 first, last = wf.borrow_span(plate)
                 if first not in self.inc:
                     continue
-                end = self.end[last] if last in self.inc else self.open_end
+                end = self.end[last] if last in self.inc else self._open_end(self.start[first])
                 spans[plate].append(self._interval(self.start[first], end, None,
                                                    name=f"borrow[{plate}:{wf.id}]"))
         for ivs in spans.values():
