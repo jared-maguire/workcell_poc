@@ -80,7 +80,9 @@ def test_same_delay_does_not_retrigger(timed_batch):
     bad = lambda st: Plan("cpsat:makespan", {}, {}, {}, "no_solution", solver_status="UNKNOWN")
     with patch("workcell.live.executor.actual_block", overrun("pcr_live-0/12", 900)):
         r = execute_live(b, p0(b), QUIET, bad, 300)
-    assert len(r.replans) == 1
+    # it may fire again only while the overrun is still growing (seen mid-run, then at its end)
+    assert r.replans and sum(e.push for e in r.replans) <= 900
+    assert all(b2.delay > b1.delay for b1, b2 in zip(r.replans, r.replans[1:]))
 
 
 def test_same_seed_same_run(timed_batch):
