@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workcell report</title>
+<link rel="icon" href="data:,">
+<style>/*__CSS__*/</style>
+<style>/*__PYGMENTS_CSS__*/</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-row">
+    <div class="brand">
+      <h1>Workcell report</h1>
+      <p id="summary" class="muted"></p>
+    </div>
+    <nav id="tabs" class="tabs" role="tablist" aria-label="Scheduling mode"></nav>
+  </div>
+  <div class="transport" id="transport">
+    <button id="play" class="btn play" type="button" title="Play / pause (space)" aria-label="Play">
+      <svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
+      <svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h3v11H4zM9 2.5h3v11H9z"/></svg>
+    </button>
+    <label class="speed">speed
+      <select id="speed" aria-label="Playback speed"></select>
+    </label>
+    <div id="scrub" class="scrub" tabindex="0" role="slider" aria-label="Time" aria-valuemin="0">
+      <div class="scrub-rail"></div>
+      <div class="scrub-fill"></div>
+      <div class="scrub-markers"></div>
+      <div class="scrub-knob"></div>
+    </div>
+    <output id="tnow" class="tnow">t = 0 min</output>
+  </div>
+</header>
+
+<main>
+  <section class="card" id="sec-stats">
+    <div class="card-h"><h2>Mode comparison</h2><span class="muted small">click a column to switch mode</span></div>
+    <div class="table-wrap"><table id="stats-table" class="stats"></table></div>
+  </section>
+
+  <section id="sec-run">
+    <div id="run-alerts"></div>
+    <div id="run-empty" class="card empty" hidden></div>
+    <div id="run-views">
+      <div class="card">
+        <div class="card-h"><h2>Instrument utilization</h2><span id="util-note" class="muted small"></span></div>
+        <div id="util" class="util"></div>
+      </div>
+      <div class="card">
+        <div class="card-h">
+          <h2>Gantt by instrument</h2>
+          <div class="legend" id="legend-inst"></div>
+          <div class="zoom" role="group" aria-label="Zoom">
+            <button type="button" class="btn sm" data-zoom="1">fit</button><button type="button" class="btn sm" data-zoom="2">2&times;</button><button type="button" class="btn sm" data-zoom="4">4&times;</button><button type="button" class="btn sm" data-zoom="8">8&times;</button>
+          </div>
+        </div>
+        <div id="gantt-inst" class="gantt"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Gantt by workflow</h2><div class="legend" id="legend-wf"></div></div>
+        <div id="gantt-wf" class="gantt"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Floor plan</h2><div class="legend" id="legend-floor"></div></div>
+        <div id="floor" class="floor"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="sec-source">
+    <div class="card-h">
+      <h2>Source</h2>
+      <div class="subtabs" id="src-tabs" role="tablist">
+        <button type="button" class="subtab" data-src="workflows">workflows</button><button type="button" class="subtab" data-src="batch">batch</button><button type="button" class="subtab" data-src="workcell">workcell</button>
+      </div>
+    </div>
+    <div id="src" class="src"></div>
+  </section>
+
+  <section class="card" id="sec-compiled">
+    <div class="card-h"><h2>Compiled blocks</h2><span class="muted small">click a block to highlight its bars; click a bar to jump here</span></div>
+    <div id="compiled"></div>
+  </section>
+</main>
+
+<div id="tip" class="tip" hidden></div>
+<script id="workcell-data" type="application/json">__DATA__</script>
+<script>/*__JS__*/</script>
+</body>
+</html>
