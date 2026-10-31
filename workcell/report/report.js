@@ -40,7 +40,14 @@
     incomplete: "incomplete",
   };
   const FINISHED = new Set(["complete", "optimal", "feasible"]);
-  const SPEEDS = [0.5, 1, 2, 5, 10, 20, 50, 100, 200];
+  // Live (v2) reports: times are seconds, shown as h:mm:ss; v1 reports keep "min".
+  const LIVE = D.live;
+  const SPEEDS = LIVE ? [10, 30, 60, 120, 300, 600] : [0.5, 1, 2, 5, 10, 20, 50, 100, 200];
+  const hms = v => {
+    const x = Math.max(0, Math.round(v)), h = Math.floor(x / 3600), m = Math.floor(x % 3600 / 60);
+    return `${h}:${String(m).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
+  };
+  const mss = v => { const x = Math.round(Math.abs(v)); return `${Math.floor(x / 60)}:${String(x % 60).padStart(2, "0")}`; };
 
   const instById = Object.fromEntries(D.instruments.map(i => [i.id, i]));
   const typeRank = t => { const r = TYPE_ORDER.indexOf(t); return r < 0 ? 99 : r; };
@@ -87,8 +94,19 @@
     return `<li class="${i.duration ? "" : "zero"}">${esc(i.instrument)}.<span class="op">${esc(i.op)}</span>(${args}) <span class="d">${i.duration}m</span></li>`;
   }
   const fmtNum = (v, d) => (v === null || v === undefined ? "—" : (d ? Number(v).toFixed(d) : String(v)));
+  const dur = (v, d) => (v === null || v === undefined ? "—" : LIVE ? hms(v) : `${fmtNum(v, d)} min`);
+  const at = v => (LIVE ? hms(v) : String(v));
   const badge = s => `<span class="badge ${esc(s)}" title="${esc(STATUS_HINT[s] || s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
   const pct = (x, T) => (100 * x / T) + "%";
+  function replanLabel(e) {
+    const what = (compiledById[e.trigger] && compiledById[e.trigger].label) || e.trigger;
+    if (e.adopted) return `re-planned at ${hms(e.time)} — ${what} ran ${mss(e.delay)} long; `
+      + `projected push ${mss(e.push)} > ${mss(LIVE.threshold)}; finish ${hms(e.makespan_before)} → ${hms(e.makespan_after)}`
+      + (e.reassigned ? `, reassigned ${e.reassigned}` : "");
+    if (e.status === "not_worth_it") return `kept plan at ${hms(e.time)} — ${what} ran ${mss(e.delay)} long; `
+      + `re-plan would save only ${mss(e.makespan_before - e.makespan_after)}`;
+    return `re-plan failed (${e.status}) at ${hms(e.time)} — ${what} ran ${mss(e.delay)} long`;
+  }
   function niceStep(raw) {
     const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1e-9))));
     for (const m of [1, 2, 5, 10]) if (m * p >= raw) return Math.max(1, m * p);
@@ -135,7 +153,9 @@
     Object.values(instBlocks).forEach(a => a.sort((x, y) => x.start - y.start));
     const markers = [];
     if (run.deadlock) markers.push({ time: run.deadlock.time, label: `deadlock t=${run.deadlock.time}` });
-    if (run.alarm) markers.push({ time: run.alarm.time, label: `alarm t=${run.alarm.time}` });
+    if (run.alarm) markers.push({ time: run.alarm.time, label: `alarm t=${at(run.alarm.time)}` });
+    if (LIVE) for (const e of LIVE.replans) markers.push({ time: e.time, label: replanLabel(e),
+      cls: e.adopted ? "rp-adopted" : e.status === "not_worth_it" ? "rp-kept" : "rp-failed" });
     return (run._p = { T, byId, ghosts, cycle, plateMoves, instBlocks, markers });
   }
 
@@ -149,6 +169,7 @@
     `${D.workflows.length} workflow${D.workflows.length === 1 ? "" : "s"} · ${D.instruments.length} instruments · ${D.runs.length} mode${D.runs.length === 1 ? "" : "s"}`;
 
   function renderTabs() {
+    $("#tabs").hidden = !!LIVE;           // a live report is a single run
     $("#tabs").innerHTML = D.runs.map((r, i) =>
       `<button type="button" class="tab" role="tab" data-run="${i}" aria-selected="${i === S.run}">${esc(r.mode)} ${badge(statusOf(r))}</button>`
     ).join("");
@@ -164,19 +185,30 @@
     const best = finished.length > 1 ? Math.min(...finished.map(r => r.stats.makespan)) : null;
     const rows = [
       ["status", r => badge(statusOf(r))],
-      ["makespan", r => `<span class="${best !== null && FINISHED.has(statusOf(r)) && r.stats.makespan === best ? "best" : ""}">${r.stats.makespan} min</span>`],
+      ["makespan", r => `<span class="${best !== null && FINISHED.has(statusOf(r)) && r.stats.makespan === best ? "best" : ""}">${dur(r.stats.makespan)}</span>`],
       ["completed", r => `${r.stats.completed} / ${r.stats.total}`],
-      ["mean latency", r => (r.stats.mean_latency === null ? "—" : `${fmtNum(r.stats.mean_latency, 1)} min`)],
-      ["max latency", r => (r.stats.max_latency === null ? "—" : `${r.stats.max_latency} min`)],
-      ["mean completion", r => (r.stats.mean_completion === null ? "—" : `${fmtNum(r.stats.mean_completion, 1)} min`)],
-      ["waiting (total)", r => (r.stats.total_waiting === null ? "—" : `${r.stats.total_waiting} min`)],
-      ["waiting (mean)", r => (r.stats.mean_waiting === null ? "—" : `${fmtNum(r.stats.mean_waiting, 1)} min`)],
-      ["blocked (total)", r => `${Object.values(r.stats.blocked || {}).reduce((a, b) => a + b, 0)} min`],
+      ["mean latency", r => dur(r.stats.mean_latency, 1)],
+      ["max latency", r => dur(r.stats.max_latency)],
+      ["mean completion", r => dur(r.stats.mean_completion, 1)],
+      ["waiting (total)", r => dur(r.stats.total_waiting)],
+      ["waiting (mean)", r => dur(r.stats.mean_waiting, 1)],
+      ["blocked (total)", r => dur(Object.values(r.stats.blocked || {}).reduce((a, b) => a + b, 0))],
       ["planner status", r => esc(SOLVER_LABEL[r.status] || r.status)],
       ["solve time", r => `${Number(r.stats.solve_seconds).toFixed(2)} s`],
       ["lock waits", r => String(r.stats.lock_waits)],
       ["alarm", r => (r.stats.alarm ? esc(r.stats.alarm) : "—")],
     ];
+    if (LIVE) {
+      const L = LIVE.stats;
+      rows.push(
+        ["seed", () => String(L.seed)],
+        ["re-plan threshold", () => mss(L.threshold)],
+        ["re-plans", () => `${L.replans} (${L.adopted_replans} adopted / ${L.not_worth_it} not worth it / ${L.failed_replans} failed)`],
+        ["reassignments", () => String(L.reassignments)],
+        ["total delay", () => hms(L.total_delay)],
+        ["planned makespan", () => hms(L.planned_makespan)],
+        ["actual makespan", () => hms(L.actual_makespan)]);
+    }
     const head = `<thead><tr><th></th>${runs.map((r, i) => `<th data-run="${i}">${esc(r.mode)}</th>`).join("")}</tr></thead>`;
     const body = rows.map(([name, f]) => `<tr><td>${name}</td>${runs.map((r, i) =>
       `<td data-run="${i}" class="${name === "alarm" && r.stats.alarm ? "alarm-msg" : ""}">${f(r)}</td>`).join("")}</tr>`).join("");
@@ -199,10 +231,10 @@
     $("#util").innerHTML = instSorted.map(inst => {
       const v = u[inst.id] || 0;
       const has = inst.id in bl, m = bl[inst.id] || 0, bv = T ? m / T : 0;
-      const title = has ? `${m} min holding a plate while idle (blocked)` : "";
+      const title = has ? `${dur(m)} holding a plate while idle (blocked)` : "";
       return `<div class="ub" title="${esc(title)}"><span title="${esc(inst.type)}">${esc(inst.id)}</span><div class="rail"><div class="fill" style="width:${(100 * v).toFixed(1)}%;background:${instColor(inst.id)}"></div><div class="fill blocked" style="width:${(100 * bv).toFixed(1)}%;--c:${instColor(inst.id)}"></div></div><span class="pct">${Math.round(100 * v)}%</span><span class="blk-m">${has ? (m ? `${m}m blocked` : "—") : ""}</span></div>`;
     }).join("");
-    $("#util-note").textContent = `${run.mode} · solid: busy time / makespan (${run.stats.makespan} min) · hatched: blocked, a plate rests in the instrument while it is idle`;
+    $("#util-note").textContent = `${run.mode} · solid: busy time / makespan (${dur(run.stats.makespan)}) · hatched: blocked, a plate rests in the instrument while it is idle`;
   }
 
   // ---------------------------------------------------------------- alerts
@@ -250,13 +282,13 @@
     const step = niceStep(T / (8 * S.zoom));
     let ticks = "", grid = "";
     for (let x = 0; x <= T + 1e-9; x += step) {
-      ticks += `<span class="tick" style="left:${pct(x, T)}">${x}</span>`;
+      ticks += `<span class="tick" style="left:${pct(x, T)}">${at(x)}</span>`;
       if (x > 0) grid += `<div class="gridline" style="left:${pct(x, T)}"></div>`;
     }
     const markers = P().markers.map(m =>
-      `<div class="marker" style="left:${pct(m.time, T)}"><span>${esc(m.label)}</span></div>`).join("");
+      `<div class="marker ${m.cls || ""}" style="left:${pct(m.time, T)}" title="${esc(m.label)}"><span>${esc(m.cls ? "" : m.label)}</span></div>`).join("");
     return `<div class="g-scroll"><div class="g-inner" style="width:${S.zoom * 100}%">
-      <div class="g-axis"><div class="g-label">min</div><div class="g-track">${ticks}</div></div>
+      <div class="g-axis"><div class="g-label">${LIVE ? "h:mm:ss" : "min"}</div><div class="g-track">${ticks}</div></div>
       ${rowsHtml}
       <div class="g-overlay">${grid}${markers}<div class="cursor"></div></div>
     </div></div>`;
@@ -354,7 +386,7 @@
     if (!b) return hideTip();
     const head = b.ghost
       ? `waiting since t=${b.start}${b.cycle ? " · in the wait cycle" : ""} · ${esc(b.reason)}`
-      : `${esc(b.id)} · ${esc(b.kind)}${b.inserted ? " · planner-inserted" : ""} · t ${b.start}–${b.end} (${b.end - b.start} min)`;
+      : `${esc(b.id)} · ${esc(b.kind)}${b.inserted ? " · planner-inserted" : ""} · t ${at(b.start)}–${at(b.end)} (${dur(b.end - b.start)})`;
     tip.innerHTML = `<div class="tt">${esc(b.workflow)} · ${esc(b.label)}</div><div class="tm">${head}</div>
       <div class="tm">locks: ${esc([...b.instruments, ...b.plates].join(", "))}</div>
       <ol class="instr">${(b.instructions || []).map(fmtInstr).join("")}</ol>`;
@@ -494,7 +526,7 @@
     S.cursors.forEach(c => { c.style.left = x; });
     fill.style.width = x; knob.style.left = x;
     scrub.setAttribute("aria-valuenow", Math.floor(S.t));
-    $("#tnow").textContent = `t = ${Math.floor(S.t)} / ${T} min`;
+    $("#tnow").textContent = LIVE ? `t = ${hms(S.t)} / ${hms(T)}` : `t = ${Math.floor(S.t)} / ${T} min`;
     updateFloor(S.t, animate);
     if (S.playing && S.zoom > 1) follow();
   }
@@ -510,7 +542,7 @@
   function renderScrubMarkers() {
     const T = P().T;
     $(".scrub-markers", scrub).innerHTML = P().markers.map(m =>
-      `<div class="mk" style="left:${pct(m.time, T)}" title="${esc(m.label)}"></div>`).join("");
+      `<div class="mk ${m.cls || ""}" style="left:${pct(m.time, T)}" title="${esc(m.label)}"></div>`).join("");
     scrub.setAttribute("aria-valuemax", T);
   }
   let scrubDrag = false;
@@ -526,9 +558,9 @@
   });
 
   const speedSel = $("#speed");
-  speedSel.innerHTML = SPEEDS.map(s => `<option value="${s}">${s} min/s</option>`).join("");
+  speedSel.innerHTML = SPEEDS.map(s => `<option value="${s}">${s} ${LIVE ? "s" : "min"}/s</option>`).join("");
   speedSel.addEventListener("change", () => { S.speed = +speedSel.value; S.speedTouched = true; });
-  const DEFAULT_SPEED = 2;
+  const DEFAULT_SPEED = LIVE ? 60 : 2;
   function autoSpeed() {
     if (S.speedTouched) return;
     S.speed = DEFAULT_SPEED;

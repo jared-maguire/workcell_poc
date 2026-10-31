@@ -307,3 +307,11 @@ ol.instr .d { color: var(--muted); }
 .tip .tt { font-weight: 600; margin-bottom: 2px; }
 .tip .tm { font: 11px var(--mono); color: var(--muted); margin-bottom: 4px; }
 .tip ol.instr li { white-space: normal; }
+
+/* live re-plan markers: adopted (solid), kept/not worth it (outline), failed (muted) */
+.marker.rp-adopted { border-left: 2px solid var(--accent, #3b7dd8); }
+.marker.rp-kept { border-left: 2px dashed var(--accent, #3b7dd8); }
+.marker.rp-failed { border-left: 2px dotted var(--muted, #999); }
+.scrub-markers .mk.rp-adopted { background: var(--accent, #3b7dd8); }
+.scrub-markers .mk.rp-kept { background: transparent; border: 1px solid var(--accent, #3b7dd8); }
+.scrub-markers .mk.rp-failed { background: var(--muted, #999); }
