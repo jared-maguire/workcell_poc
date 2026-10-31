@@ -21,10 +21,16 @@ Ideas deliberately left out of the current version. Newest at the top of each se
 
 ## Scheduling performance (from v2 observations)
 
+Done: 10 s grid, 4 h rolling window, persistent solver process (demos 4–7 min → 40–130 s). Tried, no help: a hand-added thermocycler lower bound (slower or weaker) and a relative gap limit (only reached at the end).
+
+- **Window selection ignores contention.** Blocks enter the window by deps-only earliest start, so many parallel workflows (10 PCRs) all fall in the first window. A resource-aware estimate (e.g. the previous plan's starts, or a quick list schedule) would keep windows small.
+- **Idle-hold first plan from an infeasible warm start.** The hard-limit stage starts from a plan that breaks the limit; in a small budget it can settle for a much worse plan (two arms, whole batch: 20 h vs 12 h). Repairing the warm start into a compliant plan (insert parks where waits are long) before solving would fix the hint.
+- **Idle-hold re-plan churn.** Bursts of small adopted idle-hold re-plans (every ~5 min) near the end of runs.
+- **Re-plans that find nothing.** On two arms a few re-plans still return no solution even after a 4× retry (the rounded warm start).
+
+
 With realistic times (4 s scans next to 4020 s thermocycles; horizon ~44,000 s), CP-SAT cannot find a first feasible plan for 10 PCR workflows unaided; with a serial warm start it reaches 21,413 s against a ~20,100 s thermocycler lower bound.
 
-- **Plan on a coarser time grid.** Plan in e.g. 10 s units (round durations up), execute in seconds. Roughly 10× smaller domains, small loss in plan quality.
-- **Give CP-SAT the thermocycler lower bound.** Add redundant constraints (makespan ≥ total thermocycle time ÷ number of thermocyclers, plus unavoidable lead-in/lead-out) so it can prove near-optimality and stop early instead of spending its whole budget.
 - **Two-level planning.** First decide which thermocycler each plate uses and in what order (the real bottleneck), then schedule the arm moves around that fixed assignment.
 
 ## Carried over from v1

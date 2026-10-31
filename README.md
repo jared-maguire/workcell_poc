@@ -24,16 +24,19 @@ The report opens on the best run (shortest makespan among runs where every workf
 ```
 ```
 seed: 0
-planned makespan: 5:56:22
-actual makespan:  7:50:30
-re-plans: 11 (5 adopted, 6 not worth it, 0 failed)
-idle hold: limit 300s, parks 18, violations 6 (worst 399s)
+planning: grid 10s, window 4 h
+planned makespan: 7:39:40
+actual makespan:  9:18:08
+re-plans: 3 (0 adopted, 3 not worth it, 0 failed)
+idle hold: limit 300s, parks 15, violations 1 (worst 328s)
 completed: 10/10
 ```
 
 **Idle hold.** No instrument may sit idle holding a plate for more than 5 minutes (`--max-idle-hold SECONDS`, `0` disables). The planner sees long waits coming and parks the plate right away in the hotel (deck positions: only the arm move) or storage (a machine: 60 s to store or retrieve), then brings it back when its next stop is free; short waits stay put. During the run, like a lab tech, the executor moves a plate to the hotel when it has waited almost the limit and its next move still hasn't started (e.g. behind a thermocycler running long). Waits that still go over (mostly by seconds, from step-time noise) are counted in the report.
 
-Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 30), `--replan-time-limit` (per re-plan phase, default 2), `--noise`, `--delay-prob`.
+Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 8), `--replan-time-limit` (per re-plan phase, default 0.5), `--grid SECONDS` (plan in N-second units, default 10), `--window-hours H` (plan this far ahead and extend as the run goes, default 4; 0 = whole batch), `--noise`, `--delay-prob`. Budgets are CP-SAT deterministic time, which runs ~2–5× slower than wall seconds. With the defaults the run takes ~40 s; a bigger initial budget plans this batch better (`--time-limit 30`: planned ~6 h).
+
+**Planning speed.** CP-SAT plans on a 10 s grid (durations rounded up, execution in real seconds) and only 4 h ahead, extending the plan every 2 h; solves run in one long-lived solver process (crash-isolated). Together these cut the demos below from 4–7 min to 40–130 s at similar quality. `tools/bench_mini.py` runs small scheduler experiments in seconds.
 
 
 ## Demo: library prep + hybrid capture, three batches
@@ -41,13 +44,14 @@ Example report (opens in the browser): https://jared-maguire.github.io/workcell_
 `examples/libprep_capture.py` takes a 96-sample gDNA plate through Illumina DNA Prep library prep, IDT xGen hybridization capture, and consolidation into a single well for the sequencer: 30 steps with real durations (tagmentation, bead cleanups, indexing PCR, pooling 8 libraries per capture, dry-down, 4 h hybridization, streptavidin capture, washes, post-capture PCR, QC reads, consolidation). `examples/libprep_workcell.yaml` adds a liquid handler with on-deck magnet (×2), heated shakers (×2), sealer, peeler, centrifuge, plate reader and vacuum concentrator to the arm, storage, hotel, scanner, stamper and three thermocyclers. Workflows use `w.step(instrument_type, op, plate[, dst], seconds=...)` for these instruments. Design: `docs/superpowers/specs/2026-10-31-libprep-capture-design.md`.
 
 ```
-.venv/bin/python -m workcell live examples/libprep_workcell.yaml examples/libprep_capture.py --seed 0 --time-limit 60
+.venv/bin/python -m workcell live examples/libprep_workcell.yaml examples/libprep_capture.py --seed 0
 ```
 ```
-planned makespan: 11:19:41
-actual makespan:  12:10:24
-re-plans: 15 (11 adopted, 4 not worth it, 0 failed)
-idle hold: limit 300s, parks 17, violations 3 (worst 714s)
+planning: grid 10s, window 4 h
+planned makespan: — (rolling window)
+actual makespan:  12:12:35
+re-plans: 20 (13 adopted, 7 not worth it, 0 failed)
+idle hold: limit 300s, parks 15, violations 1 (worst 391s)
 completed: 3/3
 ```
 
@@ -58,17 +62,18 @@ One batch needs about 10.5 h of instrument time; three in parallel finish in abo
 Arms can each reach their own instruments and pass plates through handoff spots (`reach:` lists and `type: handoff` in the workcell file; only handoffs may be shared). A move between zones is relayed through a handoff in one step; the planner may use any instrument and sees each choice's route. `examples/libprep_2arm.yaml` splits the demo into a library-prep zone (arm1) and a capture zone (arm2) with one handoff spot; sealer, peeler and centrifuge exist once (plates cross over), plate readers once per zone. Design: `docs/superpowers/specs/2026-10-31-multi-arm-design.md`.
 
 ```
-.venv/bin/python -m workcell live examples/libprep_2arm.yaml examples/libprep_capture.py --seed 0 --time-limit 120
+.venv/bin/python -m workcell live examples/libprep_2arm.yaml examples/libprep_capture.py --seed 0
 ```
 ```
-planned makespan: 11:21:14
-actual makespan:  12:13:40
-re-plans: 21 (18 adopted, 3 not worth it, 0 failed)
-idle hold: limit 300s, parks 16, violations 6 (worst 324s)
+planning: grid 10s, window 4 h
+planned makespan: — (rolling window)
+actual makespan:  12:22:35
+re-plans: 17 (14 adopted, 2 not worth it, 1 failed)
+idle hold: limit 300s, parks 14, violations 0 (worst 0s)
 completed: 3/3
 ```
 
-At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. The two-arm model is harder for CP-SAT, so it gets a longer budget (`--time-limit 120`, ~7 min). Report: `docs/reports/libprep3_2arm_live.html`.
+At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. Each demo run takes about 2 minutes. Report: `docs/reports/libprep3_2arm_live.html`.
 
 ## Quickstart
 
