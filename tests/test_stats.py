@@ -65,3 +65,34 @@ def test_run_session_rejects_unknown_mode_first(workcell_small, pcr_specs, monke
     monkeypatch.setattr(run, "compile_batch", lambda *a: pytest.fail("compiled before mode check"))
     with pytest.raises(ValueError, match="bogus.*greedy_hotel"):
         run_session(workcell_small, pcr_specs(1), ["greedy", "bogus"], time_limit=1)
+
+
+def test_blocked_time_hand_checked(compiled_small):
+    # One PCR under greedy fifo (see trace in final-fix-report): stamp1 holds a plate but is idle
+    # at t=4-6 (S0001 waits for the empty plate) and t=9-10 (E0001 waits for the primer): 5 min;
+    # scan1 holds P0001 at t=12 while the arm returns S0001: 1 min; tc1 holds the finished
+    # PCR plate at t=19 while the arm returns P0001: 1 min.
+    b = compiled_small(1); p = plan_greedy(b, priority="fifo"); s = compute_stats(p, execute(p, b), b)
+    assert s.blocked == {"scan1": 1, "stamp1": 5, "tc1": 1, "tc2": 0}
+    assert s.mean_completion == 24 and s.total_waiting == s.waiting["pcr-0"] == s.mean_waiting
+
+
+def test_waiting_and_completion_summaries(compiled_small):
+    b = compiled_small(3); p = plan_greedy(b, priority="fifo", park=True); s = compute_stats(p, execute(p, b), b)
+    ends = [max(p.end(x.id) for x in wf.blocks) for wf in b.workflows]
+    assert s.mean_completion == sum(ends) / 3
+    assert s.total_waiting == sum(s.waiting.values()) and s.mean_waiting == s.total_waiting / 3
+
+
+def test_waiting_summaries_none_when_nothing_completes(compiled_small):
+    b = compiled_small(2); p = plan_greedy(b); s = compute_stats(p, execute(p, b), b)
+    assert s.total_waiting is None and s.mean_waiting is None and s.mean_completion is None
+
+
+def test_stats_incomplete_when_scheduled_blocks_never_finish(compiled_small):
+    from helpers import VALID, sequential
+    b = compiled_small(1)
+    p = sequential(b, VALID[1:])       # pcr-0/00 missing: everything after it waits forever
+    t = execute(p, b)
+    assert t.alarm is None and set(p.start) - t.completed
+    assert compute_stats(p, t, b).status == "incomplete"

@@ -65,3 +65,13 @@ def test_thermocycler_binding_spreads():
     p = plan_greedy(b, park=True)
     assert {p.bindings["pcr-0"]["?tc0"], p.bindings["pcr-1"]["?tc0"]} == {"tc1", "tc2"}
     assert validate_plan(p, b) == []
+
+
+def test_hotel_full_deadlock_is_explained():
+    inst = [{**i, "slots": 1} if i["type"] == "hotel" else i for i in SMALL["instruments"]]
+    b = compile_batch(parse_workcell({**SMALL, "instruments": inst}),
+                      [pcr(sample="S0001", primer="P0001"), pcr(sample="S0002", primer="P0002")])
+    p = plan_greedy(b, park=True)
+    assert p.status == "deadlock"
+    assert any("hotel full" in w.reason and "hotel1 1/1" in w.reason for w in p.deadlock.waits)
+    assert validate_plan(p, b) == []

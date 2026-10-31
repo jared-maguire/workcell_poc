@@ -15,7 +15,7 @@ Then open `out/report.html` in a browser. Options: `--mode M` (repeatable), `--t
 ## Modes
 
 - `greedy` (`greedy:round_robin`, `greedy:fifo`): dispatches blocks as resources free up, with no parking. It is expected to deadlock on the PCR batch; that demonstrates why planning matters.
-- `greedy_hotel` (`greedy_hotel:round_robin`, `greedy_hotel:fifo`): greedy that can park plates in the hotel to avoid deadlock.
+- `greedy_hotel` (`greedy_hotel:round_robin`, `greedy_hotel:fifo`): greedy that can park plates in the hotel to avoid deadlock. It can still deadlock if hotel capacity is exhausted (the deadlock waits then say "hotel full").
 - `cpsat` / `cpsat:makespan`: CP-SAT plan minimizing total makespan.
 - `cpsat:sum_completion`: CP-SAT plan minimizing the sum of workflow completion times.
 

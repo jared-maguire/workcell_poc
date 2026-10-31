@@ -37,6 +37,7 @@ class _Greedy:
         self.done: set[str] = set()
         self.rewritten: dict[str, Block] = {}              # parked block id -> unbound rewrite
         self.last_wf: int | None = None                    # index of the most recent starter
+        self.hotel_full: dict[str, str] = {}               # block id -> why parking failed (this pass)
 
     # -- state queries -----------------------------------------------------
     def _busy_instruments(self) -> set[str]:
@@ -179,6 +180,9 @@ class _Greedy:
         hotel = next((h for h in wc.of_type("hotel")
                       if len(self._occupants(h)) < self.capacity[h]), None)
         if hotel is None:
+            hotels = ", ".join(f"{h} {len(self._occupants(h))}/{self.capacity[h]}"
+                               for h in wc.of_type("hotel")) or "no hotel configured"
+            self.hotel_full[blk.id] = f"hotel full: cannot park {move.plate} ({hotels})"
             return False
         park = Block(id=f"{blk.id}.park", workflow=blk.workflow, kind="park",
                      label=f"park {move.plate} → {hotel}",
@@ -197,7 +201,12 @@ class _Greedy:
         self._start(park, {}, t)
         return True
 
+    def _hotel_reason(self, blk: Block) -> list[str]:
+        reason = self.hotel_full.get(blk.id)
+        return [reason] if reason else []
+
     def _start_one(self, t: int) -> bool:
+        self.hotel_full.clear()
         for cand in self._ready():
             concrete, new, _ = self._try_bind(cand)
             if concrete is not None:
@@ -218,7 +227,8 @@ class _Greedy:
             if all(bid in self.done for bid in compiled):
                 return self._plan(mode, "complete")
             if not self.running:
-                waits = [Wait(b.id, "; ".join(self._try_bind(b)[2])) for b in self._ready()]
+                waits = [Wait(b.id, "; ".join([*self._try_bind(b)[2], *self._hotel_reason(b)]))
+                         for b in self._ready()]
                 return self._plan(mode, "deadlock", Deadlock(time=t, waits=waits))
             t = min(self.running.values())
 

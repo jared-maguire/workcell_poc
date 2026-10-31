@@ -4,8 +4,9 @@ instruments:
   - {id: arm1, type: arm}
   # Large storage; holds all plates at the start of a run.
   - {id: store1, type: storage, slots: 2000}
-  # Hotel: short-term parking with limited slots, used by greedy_hotel and CP-SAT.
-  - {id: hotel1, type: hotel, slots: 50}
+  # Hotel: short-term parking used by greedy_hotel (CP-SAT v1 never parks). Hotel capacity
+  # is not modelled in v1, so give it plenty of slots (omitting `slots` means unlimited).
+  - {id: hotel1, type: hotel, slots: 1000}
   # Barcode scanner: reads a plate's barcode (one plate at a time).
   - {id: scan1, type: barcode_scanner}
   # Head stamper: has two nests, stamp1.src and stamp1.dst, to transfer between plates.
