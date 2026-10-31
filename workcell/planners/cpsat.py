@@ -14,7 +14,9 @@ from ortools.sat.python import cp_model
 
 from workcell.idle import hold_chains
 from workcell.ir import CompiledBatch, resolve
-from workcell.parking import park_durations, park_pair, parking_spots, plan_parks
+from workcell.compiler import AmbiguousRoute
+from workcell.parking import (park_durations, park_pair, park_pair_instructions,
+                              parking_spots, plan_parks)
 from workcell.plan import Plan, bind_batch
 from workcell.planners.greedy import plan_greedy
 
@@ -47,6 +49,19 @@ class ReplanState:
     # and the current plan's decisions (hints and churn)
     parks: dict[str, str | None] = field(default_factory=dict)
     hint_parks: dict[str, str | None] = field(default_factory=dict)
+
+
+def _movers(wc, instructions) -> set[str]:
+    """The arms and handoff spots an instruction list uses."""
+    return {i.instrument for i in instructions if i.instrument in wc.instruments
+            and wc.instruments[i.instrument].type in ("arm", "handoff")}
+
+
+def _longest(b) -> int:
+    """A block's longest duration over its route variants (its duration otherwise)."""
+    if not b.variants:
+        return b.duration
+    return max(sum(i.duration for i in v) for v in b.variants.values())
 
 
 def serial_hint(batch: CompiledBatch) -> tuple[dict[str, int], dict[str, dict[str, str]]]:
@@ -85,19 +100,27 @@ class _Model:
         self.chains = hold_chains(batch) if self.limit else []
         self.removals = {c.blocks[-1]: c for c in self.chains}
         self.spots = parking_spots(batch.workcell) if self.limit else []
-        self.pdur = {(d, sp): park_durations(batch, batch.block(d), sp)
-                     for d in sorted(self.removals) for sp in self.spots}
+        self.pdur = {}
+        for d in sorted(self.removals):
+            if batch.block(d).variants:
+                continue            # route depends on a binding: no park option (spec)
+            try:
+                for sp in self.spots:
+                    self.pdur[d, sp] = park_durations(batch, batch.block(d), sp)
+            except AmbiguousRoute:
+                for sp in self.spots:
+                    self.pdur.pop((d, sp), None)
         extra = sum(max((a + b for (dd, _), (a, b) in self.pdur.items() if dd == d), default=0)
                     for d in self.removals)
         # interval size per block: actual (end - start) for fixed blocks, else planned duration
         self.size = {b.id: fixed[b.id][1] - fixed[b.id][0] if b.id in fixed else b.duration
                      for b in blocks}
         if state is None:
-            horizon = sum(b.duration for b in blocks) + extra
+            horizon = sum(_longest(b) for b in blocks) + extra
             bounds = {b.id: (0, horizon) for b in blocks}
         else:
             horizon = (max([state.now] + [e for _, e in fixed.values()])
-                       + sum(b.duration for b in blocks if b.id not in fixed) + extra)
+                       + sum(_longest(b) for b in blocks if b.id not in fixed) + extra)
             bounds = {b.id: (fixed[b.id][0],) * 2 if b.id in fixed else (state.now, horizon)
                   for b in blocks}
         self.start = {b.id: self.m.NewIntVar(*bounds[b.id], f"s[{b.id}]") for b in blocks}
@@ -113,12 +136,37 @@ class _Model:
                 for var, cand in binds.items():
                     self.m.Add(self.x[wf_id, var, cand] == 1)
         self.horizon = horizon
+        self._variants(fixed)
         self._parks(fixed)
         self._dependencies()
         self._locks()
         self._stays()
         self._borrows()
         self._gaps()
+
+    def _variants(self, fixed):
+        """Route-variant blocks: one literal per variant (its bindings), and a size that is
+        the chosen variant's duration (actual size when fixed)."""
+        self.vlits: dict[str, dict[tuple, object]] = {}
+        for b in self.batch.all_blocks():
+            if not b.variants:
+                continue
+            lits = {}
+            for key in b.variants:
+                xs = [self.x[b.workflow, var, cand] for var, cand in key]
+                lit = xs[0]
+                for x in xs[1:]:
+                    lit = self._and(lit, x)
+                lits[key] = lit
+            self.vlits[b.id] = lits
+            if b.id in fixed:
+                continue
+            sz = self.m.NewIntVar(0, 2 * self.horizon, f"size[{b.id}]")
+            self.m.Add(sz == sum(sum(i.duration for i in b.variants[k]) * lit
+                                 for k, lit in lits.items()))
+            end = self.m.NewIntVar(0, 2 * self.horizon, f"end[{b.id}]")
+            self.m.Add(end == self.start[b.id] + sz)
+            self.size[b.id], self.end[b.id] = sz, end
 
     def _and(self, a, b):
         c = self.m.NewBoolVar("")
@@ -138,7 +186,8 @@ class _Model:
         self.kstart, self.ksize, self.kend = {}, {}, {}
         for d in sorted(self.removals):
             k = f"{d}.park"
-            lits = {sp: m.NewBoolVar(f"park[{d},{sp}]") for sp in self.spots}
+            lits = {sp: m.NewBoolVar(f"park[{d},{sp}]") for sp in self.spots
+                    if (d, sp) in self.pdur}
             parked = m.NewBoolVar(f"parked[{d}]")
             m.Add(parked == sum(lits.values()))
             choice = forced[d] if d in forced else (None if d in fixed else "?")
@@ -147,7 +196,7 @@ class _Model:
                     raise ValueError(f"forced park of {d} at unknown spot {choice!r}")
                 for sp, lit in lits.items():
                     m.Add(lit == int(sp == choice))
-            if d not in fixed:
+            if d not in fixed and lits:
                 sz = m.NewIntVar(0, big, f"size[{d}]")
                 m.Add(sz == self.size[d] * (1 - parked)
                       + sum(self.pdur[d, sp][1] * lit for sp, lit in lits.items()))
@@ -223,9 +272,19 @@ class _Model:
         wc = self.batch.workcell
         groups = defaultdict(list)
         for b in self.batch.all_blocks():
+            if b.id in self.vlits:          # route variants: each variant's own instruments
+                for key, lit in sorted(self.vlits[b.id].items()):
+                    for name in sorted({i.instrument for i in b.variants[key]}):
+                        groups[name].append(self._interval(
+                            self.start[b.id], self.end[b.id], lit, self.size[b.id],
+                            f"{b.id}@{name}:{key}"))
+                for plate in sorted(b.plates):
+                    groups[plate].append(self._interval(
+                        self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{plate}"))
+                continue
             concrete = {i for i in b.instruments if _var(i) is None}
             src_only = None
-            if b.id in self.removals:
+            if self.park.get(b.id):
                 (mv,) = b.moves
                 if wc.nest_owner(mv.src) != wc.nest_owner(mv.dst):
                     src_only = wc.nest_owner(mv.src)      # held only while going direct
@@ -244,13 +303,20 @@ class _Model:
             for plate in sorted(b.plates):
                 groups[plate].append(self._interval(
                     self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{plate}"))
-        arm = sorted(wc.of_type("arm"))
         for d in sorted(self.removals):                                 # park blocks
+            if not self.park[d]:
+                continue
             blk, k = self.batch.block(d), f"{d}.park"
             (mv,) = blk.moves
             ks, ksz, ke, parked = self.kstart[d], self.ksize[d], self.kend[d], self.parked[d]
-            for name in [*(a for a in arm if a in blk.instruments), mv.plate]:
-                groups[name].append(self._interval(ks, ke, parked, ksz, f"{k}@{name}"))
+            groups[mv.plate].append(self._interval(ks, ke, parked, ksz, f"{k}@{mv.plate}"))
+            for sp, lit in sorted(self.park[d].items()):    # arms/handoffs on each route
+                there, back = park_pair_instructions(self.batch, blk, sp)
+                for name in _movers(wc, there):
+                    groups[name].append(self._interval(ks, ke, lit, ksz, f"{k}@{name}:{sp}"))
+                for name in _movers(wc, back) - _movers(wc, blk.instructions):
+                    groups[name].append(self._interval(self.start[d], self.end[d], lit,
+                                                       self.size[d], f"{d}@{name}:{sp}"))
             for name, lit in self._choices(blk.workflow, wc.nest_owner(mv.src)):
                 pres = parked if lit is None else self._and(lit, parked)
                 groups[name].append(self._interval(ks, ke, pres, ksz, f"{k}@{name}"))

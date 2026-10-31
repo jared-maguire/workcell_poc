@@ -1,0 +1,66 @@
+from pathlib import Path
+
+from workcell.compiler import compile_batch
+from workcell.dsl import load_batch
+from workcell.live.session import run_live
+from workcell.parking import parking_spots
+from workcell.planners.cpsat import ReplanState, plan_cpsat, replan_cpsat
+from workcell.sim.executor import execute
+from workcell.validate import validate_plan
+
+EX = Path(__file__).resolve().parent.parent / "examples"
+
+
+def specs(n):
+    return load_batch(EX / "pcr_live.py")[0][:n]
+
+
+def plan(b, **kw):
+    return plan_cpsat(b, time_limit=1, deterministic=True, hint="serial", **kw)
+
+
+def test_two_arm_plan_valid(two_arm):
+    b = compile_batch(two_arm, specs(2))
+    p = plan(b)
+    assert p.finished and validate_plan(p, b) == []
+    tr = execute(p, b)
+    assert tr.alarm is None and tr.completed == {blk.id for blk in b.all_blocks()}
+    # whichever thermocyclers were chosen, moves to tc2 are relayed through ho1 by both arms
+    for bid, blk in p.blocks.items():
+        if any(m.dst == "tc2" or m.src == "tc2" for m in blk.moves):
+            assert {"arm1", "arm2", "ho1"} <= blk.instruments
+
+
+def test_two_arm_plan_uses_far_thermocycler(two_arm):
+    b = compile_batch(two_arm, specs(2))
+    p = plan(b)
+    assert {p.bindings[wf]["?tc0"] for wf in p.bindings} == {"tc1", "tc2"}
+
+
+def test_two_arm_replan_valid(two_arm):
+    b = compile_batch(two_arm, specs(2))
+    p = plan(b)
+    order = sorted(p.start, key=lambda k: (p.start[k], k))[:12]
+    now = max(p.end(k) for k in order)
+    keep = {wf: dict(v) for wf, v in p.bindings.items()}
+    st = ReplanState(now=now, fixed={k: (p.start[k], p.end(k)) for k in order},
+                     bindings=keep, hint=dict(p.start), hint_bindings=keep)
+    new = replan_cpsat(b, st, time_limit=1, max_idle_hold=300)
+    assert new.finished and validate_plan(new, b) == []
+
+
+def test_two_arm_idle_hold_plan(two_arm):
+    from workcell.planners.cpsat import plan_idle_hold
+    b = compile_batch(two_arm, specs(2))
+    p = plan_idle_hold(b, time_limit=2, max_idle_hold=300)
+    assert p.finished and validate_plan(p, b) == []
+
+
+def test_two_arm_live_runs(two_arm):
+    ls = run_live(two_arm, specs(2), seed=1, time_limit=2, replan_time_limit=0.5)
+    assert ls.errors == [] and ls.result.trace.alarm is None
+
+
+def test_parking_spots_nearest_first(two_arm):
+    assert parking_spots(two_arm, near="tc2") == ["hotel2", "hotel1", "store1"]
+    assert parking_spots(two_arm, near="stamp1.dst") == ["hotel1", "store1", "hotel2"]

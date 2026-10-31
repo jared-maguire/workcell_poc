@@ -117,7 +117,9 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         return max(t, started[bid] + blocks[bid].duration)
 
     removals = {c.blocks[-1] for c in hold_chains(batch)} if max_idle_hold else set()
-    spot = (parking_spots(batch.workcell) or [None])[0]
+    def spot_for(d: str) -> str | None:
+        """The parking spot nearest the plate's nest (fewest arm hops)."""
+        return (parking_spots(batch.workcell, near=blocks[d].moves[0].src) or [None])[0]
 
     def waiting(t: int) -> list[tuple[int, str]]:
         """(deadline, removal) for each pending, unparked removal whose deps have all ended and
@@ -126,7 +128,8 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         out = []
         for d in pending:
             k = f"{d}.park"
-            if d not in removals or k in pending or k in started or blocks[d].moves[0].src == spot:
+            if (d not in removals or k in pending or k in started
+                    or blocks[d].moves[0].src in parking_spots(batch.workcell)):
                 continue
             if not all(x in ended for x in blocks[d].deps if x in start_at):
                 continue                # the plate still has a use here: parking won't help
@@ -135,7 +138,7 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
                 continue
             last = max((ended[b] for b in ended if mv.plate in blocks[b].plates), default=None)
             if last is not None:
-                park, _ = park_pair(batch, blocks[d], spot)
+                park, _ = park_pair(batch, blocks[d], spot_for(d))
                 out.append((last + max_idle_hold - park.duration, d))
         return sorted(out)
 
@@ -143,9 +146,9 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         """Park every waiting plate whose deadline has come: insert `<removal>.park` (nest ->
         hotel, starting now, after only its own deps) and start the removal from the hotel."""
         nonlocal plan, preds
-        due = [d for deadline, d in waiting(t) if deadline <= t] if spot else []
+        due = [d for deadline, d in waiting(t) if deadline <= t]
         for d in due:
-            park, moved = park_pair(batch, blocks[d], spot)
+            park, moved = park_pair(batch, blocks[d], spot_for(d))
             blocks[d], blocks[park.id] = moved, park
             start_at[park.id] = t
             seq.setdefault(park.id, len(seq))
