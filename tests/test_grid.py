@@ -76,3 +76,28 @@ def test_window_more_workflows_than_thermocyclers(timed_batch):
     b = timed_batch(4)
     p = plan_cpsat(b, time_limit=0.5, deterministic=True, hint="serial", grid=10, window=3600)
     assert p.finished and p.partial and validate_plan(p, b) == []
+
+
+def test_grid_given_park_and_started_removal(two_arm):
+    """A lab-tech park and its rewritten removal both started, the removal 3 s after the
+    park ended inside one 10 s cell: the grid model must stay feasible."""
+    from pathlib import Path
+    from workcell.compiler import compile_batch
+    from workcell.dsl import load_batch
+    from workcell.parking import park_pair, parking_spots
+    b = compile_batch(two_arm, load_batch(Path(__file__).resolve().parent.parent
+                                          / "examples/pcr_live.py")[0][:2])
+    p = plan_cpsat(b, time_limit=1, deterministic=True, hint="serial")
+    d = "pcr_live-0/15"
+    spot = parking_spots(two_arm, near=p.bindings["pcr_live-0"]["?tc0"])[0]
+    park, moved = park_pair(b, p.blocks[d], spot)
+    fixed = {k: (p.start[k], p.end(k)) for k in p.start if p.start[k] < p.start[d]}
+    t = max(e for _, e in fixed.values()) + 1
+    t += (1 - (t + park.duration)) % 10                         # park ends 1 s into a cell
+    fixed[park.id] = (t, t + park.duration)
+    fixed[d] = (t + park.duration + 3, t + park.duration + 3 + moved.duration)
+    keep = {wf: dict(v) for wf, v in p.bindings.items()}
+    st = ReplanState(now=fixed[d][1] + 1, fixed=fixed, bindings=keep, hint=dict(p.start),
+                     hint_bindings=keep, blocks={d: moved, park.id: park})
+    new = replan_cpsat(b, st, time_limit=1, grid=10, max_idle_hold=300)
+    assert new.finished

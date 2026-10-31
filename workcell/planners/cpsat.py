@@ -261,7 +261,8 @@ class _Model:
             k = f"{d}.park"
             if d in self.over and k in fixed:       # parked already: it left at the park start
                 self.park[d], self.leave[d] = {}, m.NewConstant(fixed[k][0])
-                m.Add(self.start[d] >= self.q(self.state.fixed[k][1]))
+                if d not in fixed:      # (both started: rounding could make this impossible)
+                    m.Add(self.start[d] >= self.q(self.state.fixed[k][1]))
                 continue
             lits = {sp: m.NewBoolVar(f"park[{d},{sp}]") for sp in self.spots
                     if (d, sp) in self.pdur}
@@ -479,14 +480,11 @@ class _Model:
             primary = sum(done)
         else:
             raise ValueError(f"unknown CP-SAT objective {objective!r}")
-        if not self.limit and not self.window:
+        if not self.limit:
             self.m.Minimize(primary)
             return
-        total = 100 * primary
-        if self.limit:
-            total += sum(self.park_delay) + PARK_COST * sum(self.parked.values())
-        if self.window:     # makespan alone lets off-critical blocks drift late in the window
-            total += sum(v for b, v in sorted(self.start.items()) if b not in self.fixed)
+        total = (100 * primary + sum(self.park_delay)
+                 + PARK_COST * sum(self.parked.values()))
         if self.soft:
             total += 200 * self.horizon * (len(self.gaps) + 1) * sum(self.excess)
         self.m.Minimize(total)

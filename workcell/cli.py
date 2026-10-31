@@ -58,10 +58,11 @@ def _parser() -> argparse.ArgumentParser:
     live.add_argument("--seed", type=int, default=0)
     live.add_argument("--replan-threshold", type=int, default=300, metavar="SECONDS",
                       help="re-plan when a delay would push a step later by more than this (default 300)")
-    live.add_argument("--replan-time-limit", type=float, default=2, metavar="S",
-                      help="CP-SAT deterministic seconds per re-plan phase (default 2)")
-    live.add_argument("--time-limit", type=float, default=30, metavar="S",
-                      help="CP-SAT deterministic seconds for the initial plan (default 30)")
+    live.add_argument("--replan-time-limit", type=float, default=0.5, metavar="S",
+                      help="CP-SAT deterministic time per re-plan phase (default 0.5; "
+                           "deterministic units run ~2-5x slower than wall seconds)")
+    live.add_argument("--time-limit", type=float, default=8, metavar="S",
+                      help="CP-SAT deterministic time for the initial plan (default 8)")
     live.add_argument("--noise", type=float, default=0.05, help="relative sigma of step times (default 0.05)")
     live.add_argument("--delay-prob", type=float, default=0.02,
                       help="chance a step runs 2-5x long (default 0.02)")

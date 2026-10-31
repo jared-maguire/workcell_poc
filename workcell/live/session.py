@@ -91,8 +91,8 @@ def _live_stats(batch: CompiledBatch, result: LiveResult, seed: int, threshold: 
 
 def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
              delay_prob: float = 0.02, delay_range: tuple[float, float] = (2.0, 5.0),
-             replan_threshold: int = 300, replan_time_limit: float = 2.0,
-             time_limit: float = 30.0, workcell_source: str = "",
+             replan_threshold: int = 300, replan_time_limit: float = 0.5,
+             time_limit: float = 8.0, workcell_source: str = "",
              batch_source: str = "", max_idle_hold: int | None = 300, grid: int = 10,
              window: int | None = 4 * 3600) -> LiveSession:
     """Plan, run live, and validate what actually happened. CP-SAT plans in units of `grid`
