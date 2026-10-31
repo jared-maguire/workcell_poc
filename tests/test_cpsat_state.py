@@ -150,3 +150,11 @@ def test_hint_modes(timed_batch, monkeypatch):
                for w, vs in bindings.items() for v in vs
                for c in next(x for x in b.workflows if x.id == w).variables[v])
     assert none == {} and false == {}
+
+
+def test_serial_hint_raises_when_nothing_ready(timed_batch):
+    b = timed_batch(1); wf = b.workflows[0]
+    first = wf.blocks[0]
+    first.deps.append(wf.blocks[-1].id)          # a cycle: no block of wf is ever ready
+    with pytest.raises(ValueError, match=wf.id):
+        serial_hint(b)

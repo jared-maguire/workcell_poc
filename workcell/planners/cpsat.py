@@ -5,6 +5,7 @@ import pickle
 import subprocess
 import sys
 import time
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Literal
@@ -42,18 +43,23 @@ class ReplanState:
 
 
 def serial_hint(batch: CompiledBatch) -> tuple[dict[str, int], dict[str, dict[str, str]]]:
-    """Ruling R5(b): a trivially valid plan running one block at a time at planned durations.
-    Workflows go in batch order; within one, the next block is the ready one (all deps done)
-    that is a return, else the earliest compiled. Every var takes its first candidate.
-    Returns (starts, bindings)."""
+    """Ruling R5(b): a plan running one block at a time at planned durations. Workflows go
+    in batch order; within one, the next block is the ready one (all deps done) that is a
+    return, else the earliest compiled. Every var takes its first candidate. Valid for
+    workflows whose returns free their nests before the next workflow needs them (e.g. PCR);
+    not guaranteed otherwise. Returns (starts, bindings); raises ValueError if a workflow
+    has no ready block (a dependency cycle or a dep outside the workflow)."""
     t, starts, bindings = 0, {}, {}
     for wf in batch.workflows:
         bindings[wf.id] = {var: cands[0] for var, cands in wf.variables.items()}
         index = {b.id: i for i, b in enumerate(wf.blocks)}
         todo = list(wf.blocks)
         while todo:
-            nxt = min((b for b in todo if all(d in starts for d in b.deps)),
-                      key=lambda b: (b.kind != "return", index[b.id]))
+            ready = [b for b in todo if all(d in starts for d in b.deps)]
+            if not ready:
+                raise ValueError(f"serial_hint: no ready block in workflow {wf.id!r} "
+                                 f"(remaining: {[b.id for b in todo]})")
+            nxt = min(ready, key=lambda b: (b.kind != "return", index[b.id]))
             starts[nxt.id] = t
             t += nxt.duration
             todo.remove(nxt)
@@ -287,7 +293,14 @@ def _solve(m: cp_model.CpModel, solver: cp_model.CpSolver, isolate: bool) -> _So
     """Solve here, or (ruling R7) in a child process so an OR-Tools abort cannot kill us."""
     if not isolate:
         return _run(m, solver)
-    return _solve_isolated(str(m.Proto()), str(solver.parameters))
+    params = solver.parameters
+    return _solve_isolated(str(m.Proto()), str(params),
+                           _child_timeout(params.max_deterministic_time))
+
+
+def _child_timeout(time_limit: float) -> float:
+    """Wall-clock seconds a child solve may take before it counts as a failed attempt."""
+    return max(60.0, 10 * time_limit)
 
 
 def _child_main() -> None:
@@ -306,15 +319,30 @@ _CHILD_CMD = [sys.executable, "-c",
               "from workcell.planners.cpsat import _child_main; _child_main()"]
 
 
-def _solve_isolated(model_text: str, params_text: str) -> _Solution:
-    """Solve in a child process; retry an abnormal exit (deterministic, so the same answer)
-    up to `_ATTEMPTS` times in all, then give up with status "CRASHED"."""
+def _solve_isolated(model_text: str, params_text: str, timeout: float) -> _Solution:
+    """Solve in a child process. A child killed by a signal (the OR-Tools abort), hung past
+    `timeout`, or returning an unreadable result is retried (deterministic, so the same
+    answer), up to `_ATTEMPTS` times in all, then given up with status "CRASHED". A child
+    exiting with an error code failed in Python, deterministically: raise RuntimeError."""
     request = pickle.dumps((model_text, params_text))
+    why = ""
     for _ in range(_ATTEMPTS):
-        child = subprocess.run(_CHILD_CMD, input=request, capture_output=True)
-        if child.returncode == 0:
-            try:
-                return pickle.loads(child.stdout)
-            except (pickle.UnpicklingError, EOFError):
-                pass
+        try:
+            child = subprocess.run(_CHILD_CMD, input=request, capture_output=True,
+                                   timeout=timeout)
+        except subprocess.TimeoutExpired:
+            why = f"timed out after {timeout:g} s"
+            continue
+        err = child.stderr.decode(errors="replace")[-2000:]
+        if child.returncode > 0:
+            raise RuntimeError(f"CP-SAT child exited {child.returncode}:\n{err}")
+        if child.returncode < 0:
+            why = f"killed by signal {-child.returncode}:\n{err}"
+            continue
+        try:
+            return pickle.loads(child.stdout)
+        except Exception as e:      # noqa: BLE001 — any unreadable result is a failed attempt
+            why = f"unreadable result ({e!r}):\n{err}"
+    warnings.warn(f"CP-SAT child failed {_ATTEMPTS} times; last {why}", RuntimeWarning,
+                  stacklevel=3)
     return _Solution("CRASHED", None, [], 0.0)
