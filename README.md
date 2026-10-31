@@ -24,13 +24,16 @@ The report opens on the best run (shortest makespan among runs where every workf
 ```
 ```
 seed: 0
-planned makespan: 5:56:53
-actual makespan:  7:40:17
-re-plans: 1 (1 adopted, 0 not worth it, 0 failed)
+planned makespan: 5:56:22
+actual makespan:  7:50:47
+re-plans: 11 (4 adopted, 7 not worth it, 0 failed)
+idle hold: limit 300s, parks 22, violations 4 (worst 396s)
 completed: 10/10
 ```
 
-Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 30), `--replan-time-limit` (per re-plan phase, default 2), `--noise`, `--delay-prob`.
+**Idle hold.** No instrument may sit idle holding a plate for more than 5 minutes (`--max-idle-hold SECONDS`, `0` disables). The planner sees long waits coming and parks the plate right away in the hotel (deck positions: only the arm move) or storage (a machine: 60 s to store or retrieve), then brings it back when its next stop is free; short waits stay put. During the run, like a lab tech, the executor moves a plate to the hotel when it has waited almost the limit and its next move still hasn't started (e.g. behind a thermocycler running long). Waits that still go over (mostly by seconds, from step-time noise) are counted in the report.
+
+Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 30), `--replan-time-limit` (per re-plan phase, default 2), `--noise`, `--delay-prob`.
 
 ## Quickstart
 

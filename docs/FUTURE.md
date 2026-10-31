@@ -15,6 +15,9 @@ Ideas deliberately left out of the current version. Newest at the top of each se
 
 - **Better overrun detection and estimates.** v2 checks for delays whenever any block finishes; a still-running overrun is noticed then, but only as "ends now" (optimistic), and not at all if nothing else finishes meanwhile. A timed "overdue" check at planned end + threshold, plus a pessimistic remaining-time estimate, would let re-plans move queued plates to idle instruments while the overrun is still happening.
 
+- **Smarter overrun estimates for parking.** Lab-tech parks act only when a waiting plate hits its deadline; a remaining-time estimate for overdue steps (or asking the instrument, as a real thermocycler reports time left) would let re-plans park earlier and reshuffle other work. A "late by X, assume X more" estimate was tried and caused a re-plan storm.
+- **Mid-use idle waits.** The idle-hold rule bounds waits between a workflow's own steps on an instrument (e.g. a sample on the stamper while its partner plate is fetched) but never parks for them; step-time noise can push those a few seconds over the limit.
+
 ## Scheduling performance (from v2 observations)
 
 With realistic times (4 s scans next to 4020 s thermocycles; horizon ~44,000 s), CP-SAT cannot find a first feasible plan for 10 PCR workflows unaided; with a serial warm start it reaches 21,413 s against a ~20,100 s thermocycler lower bound.
@@ -27,7 +30,6 @@ With realistic times (4 s scans next to 4020 s thermocycles; horizon ~44,000 s),
 
 - **Waiting stat can go negative.** "Waiting" = latency − Σ block durations, but a workflow's blocks can overlap; use latency − union of its block spans.
 - **CP-SAT proves optimality more often.** Add redundant constraints (e.g., arm-load lower bound on makespan, per-workflow minimum duration).
-- **CP-SAT chooses hotel parking** as an optional transport, instead of direct moves only.
 - **Hotel handoffs** between workflows sharing a plate (skip store + retrieve).
 - **Instruments keep running while re-planning** (solve time consumes wall-clock / sim time instead of pausing the clock).
 - **Multiple arms / arm reach zones.**
