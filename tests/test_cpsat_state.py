@@ -4,9 +4,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from ortools.sat.python import cp_model
 
 from workcell.plan import Plan, bind_batch
+from workcell.planners import cpsat
 from workcell.planners.cpsat import ReplanState, plan_cpsat, serial_hint
 from workcell.validate import validate_plan
 
@@ -105,14 +105,14 @@ def test_serial_hint_warm_start_improves_ten_workflows(timed_batch):
 def _capture_hints(monkeypatch):
     """Record the solution hint of every model solved: {variable name: hinted value}."""
     seen = []
-    real = cp_model.CpSolver.Solve
+    real = cpsat._solve      # the parent-side entry for every solve (ruling R7)
 
-    def solve(self, model, *a, **k):
+    def solve(model, *a, **k):
         proto = model.Proto()
         h = proto.solution_hint
         seen.append({proto.variables[v].name: x for v, x in zip(h.vars, h.values)})
-        return real(self, model, *a, **k)
-    monkeypatch.setattr(cp_model.CpSolver, "Solve", solve)
+        return real(model, *a, **k)
+    monkeypatch.setattr(cpsat, "_solve", solve)
     return seen
 
 

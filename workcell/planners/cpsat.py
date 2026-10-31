@@ -1,6 +1,9 @@
 """CP-SAT planner (spec §7): an exact model of the batch with direct transports only."""
 from __future__ import annotations
 
+import pickle
+import subprocess
+import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -15,8 +18,9 @@ from workcell.planners.greedy import plan_greedy
 Objective = Literal["makespan", "sum_completion"]
 Hint = Literal["greedy", "serial"]
 
-_STATUS = {cp_model.OPTIMAL: "optimal", cp_model.FEASIBLE: "feasible",
-           cp_model.INFEASIBLE: "infeasible", cp_model.UNKNOWN: "no_solution"}
+_STATUS = {"OPTIMAL": "optimal", "FEASIBLE": "feasible", "INFEASIBLE": "infeasible",
+           "UNKNOWN": "no_solution", "CRASHED": "no_solution"}
+_ATTEMPTS = 3       # ruling R7: child solves tried before giving up as "CRASHED"
 
 
 def _var(name: str) -> str | None:
@@ -216,7 +220,9 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     blocks keep their actual (start, end), the rest start at or after `state.now`; its
     non-empty `hint`/`hint_bindings` replace `hint`. `deterministic` (ruling R5) uses 8
     interleaved workers, a fixed seed and a deterministic-time limit (`time_limit`) instead
-    of wall time, so the same inputs give the same plan in any process."""
+    of wall time, so the same inputs give the same plan in any process; it also solves in a
+    child process (ruling R7), retried if it crashes, with status "no_solution" and
+    solver_status "CRASHED" if every attempt does."""
     t0 = time.perf_counter()
     model = _Model(batch, state)
     model.objective(objective)
@@ -240,21 +246,75 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     else:
         solver.parameters.num_workers = 8
         solver.parameters.max_time_in_seconds = time_limit
-    code = solver.Solve(model.m)
-    raw = solver.StatusName(code)
-    if code not in _STATUS:
-        raise RuntimeError(f"CP-SAT returned {raw}: {model.m.Validate() or 'invalid model'}")
-    status = _STATUS[code]
+    sol = _solve(model.m, solver, isolate=deterministic)
+    if sol.status not in _STATUS:
+        raise RuntimeError(
+            f"CP-SAT returned {sol.status}: {model.m.Validate() or 'invalid model'}")
+    status = _STATUS[sol.status]
     mode = f"cpsat:{objective}"
     if status in ("infeasible", "no_solution"):
         return Plan(mode=mode, blocks={}, start={}, bindings={}, status=status,
                     solve_seconds=time.perf_counter() - t0, objective=objective,
-                    solver_status=raw)
+                    solver_status=sol.status)
     bindings = {wf.id: {} for wf in batch.workflows}
     for (wf, var, cand), lit in model.x.items():
-        if solver.Value(lit):
+        if sol.values[lit.Index()]:
             bindings[wf][var] = cand
     return Plan(mode=mode, blocks=bind_batch(batch, bindings),
-                start={bid: solver.Value(s) for bid, s in model.start.items()},
-                bindings=bindings, status=status,
-                solve_seconds=time.perf_counter() - t0, objective=objective, solver_status=raw)
+                start={bid: sol.values[s.Index()] for bid, s in model.start.items()},
+                bindings=bindings, status=status, solve_seconds=time.perf_counter() - t0,
+                objective=objective, solver_status=sol.status)
+
+
+@dataclass
+class _Solution:
+    """A solve's outcome: CP-SAT status name (or "CRASHED"), objective value (None without a
+    solution), the value of every model variable by proto index, and solver wall time."""
+    status: str
+    objective: float | None
+    values: list[int]
+    wall: float
+
+
+def _run(m: cp_model.CpModel, solver: cp_model.CpSolver) -> _Solution:
+    code = solver.Solve(m)
+    found = code in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+    return _Solution(solver.StatusName(code), solver.ObjectiveValue() if found else None,
+                     list(solver.ResponseProto().solution), solver.WallTime())
+
+
+def _solve(m: cp_model.CpModel, solver: cp_model.CpSolver, isolate: bool) -> _Solution:
+    """Solve here, or (ruling R7) in a child process so an OR-Tools abort cannot kill us."""
+    if not isolate:
+        return _run(m, solver)
+    return _solve_isolated(str(m.Proto()), str(solver.parameters))
+
+
+def _child_main() -> None:
+    """Child process entry: read (model, parameters) in text format as a pickle on stdin,
+    solve, write the pickled `_Solution` to stdout."""
+    model_text, params_text = pickle.load(sys.stdin.buffer)
+    m = cp_model.CpModel()
+    m.Proto().parse_text_format(model_text)
+    solver = cp_model.CpSolver()
+    solver.parameters.parse_text_format(params_text)
+    pickle.dump(_run(m, solver), sys.stdout.buffer)
+
+
+# the child command; a test seam (replaced to inject child crashes)
+_CHILD_CMD = [sys.executable, "-c",
+              "from workcell.planners.cpsat import _child_main; _child_main()"]
+
+
+def _solve_isolated(model_text: str, params_text: str) -> _Solution:
+    """Solve in a child process; retry an abnormal exit (deterministic, so the same answer)
+    up to `_ATTEMPTS` times in all, then give up with status "CRASHED"."""
+    request = pickle.dumps((model_text, params_text))
+    for _ in range(_ATTEMPTS):
+        child = subprocess.run(_CHILD_CMD, input=request, capture_output=True)
+        if child.returncode == 0:
+            try:
+                return pickle.loads(child.stdout)
+            except (pickle.UnpicklingError, EOFError):
+                pass
+    return _Solution("CRASHED", None, [], 0.0)
