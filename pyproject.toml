@@ -4,6 +4,9 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = ["ortools", "pyyaml", "pygments"]
 
+[project.optional-dependencies]
+dev = ["pytest", "pytest-xdist"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -16,3 +19,5 @@ include = ["workcell*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: CP-SAT-heavy (~5–30 s each); skipped by default, run with -m slow"]
+addopts = "-m 'not slow' -n auto"

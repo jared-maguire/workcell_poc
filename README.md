@@ -11,9 +11,47 @@ A simulation playground for scheduling plate-handling workflows (such as PCR) on
 | greedy | deadlock at t=7, 0/10 done | – |
 | greedy_hotel | done | 257 min |
 | cpsat:makespan | done (not proven best within the 30 s limit) | 204 min |
-| cpsat:sum_completion | done (not proven best within the 30 s limit) | 207 min |
+| cpsat:sum_completion | done (not proven best within the 30 s limit) | 209 min |
 
 The report opens on the best run (shortest makespan among runs where every workflow finished).
+
+## v2: live re-planning
+
+`live` runs a batch the way a lab would: each step has a realistic time in seconds (set in the workflow with `@workflow(times=...)` and `seconds=`), actual times vary randomly (seeded), and the system re-plans with CP-SAT when a delay would push a later step back by more than the threshold (5 min). A re-plan keeps churn low: it holds the best finish time it can find while changing as little as possible, and it is adopted only if it finishes at least the threshold sooner than just letting everything slide. Same seed, same run.
+
+```
+.venv/bin/python -m workcell live examples/workcell.yaml examples/pcr_live.py --seed 0 --out out/live.html
+```
+```
+seed: 0
+planned makespan: 5:56:22
+actual makespan:  7:50:30
+re-plans: 11 (5 adopted, 6 not worth it, 0 failed)
+idle hold: limit 300s, parks 18, violations 6 (worst 399s)
+completed: 10/10
+```
+
+**Idle hold.** No instrument may sit idle holding a plate for more than 5 minutes (`--max-idle-hold SECONDS`, `0` disables). The planner sees long waits coming and parks the plate right away in the hotel (deck positions: only the arm move) or storage (a machine: 60 s to store or retrieve), then brings it back when its next stop is free; short waits stay put. During the run, like a lab tech, the executor moves a plate to the hotel when it has waited almost the limit and its next move still hasn't started (e.g. behind a thermocycler running long). Waits that still go over (mostly by seconds, from step-time noise) are counted in the report.
+
+Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 30), `--replan-time-limit` (per re-plan phase, default 2), `--noise`, `--delay-prob`.
+
+
+## Demo: library prep + hybrid capture, three batches
+
+`examples/libprep_capture.py` takes a 96-sample gDNA plate through Illumina DNA Prep library prep, IDT xGen hybridization capture, and consolidation into a single well for the sequencer: 30 steps with real durations (tagmentation, bead cleanups, indexing PCR, pooling 8 libraries per capture, dry-down, 4 h hybridization, streptavidin capture, washes, post-capture PCR, QC reads, consolidation). `examples/libprep_workcell.yaml` adds a liquid handler with on-deck magnet (×2), heated shakers (×2), sealer, peeler, centrifuge, plate reader and vacuum concentrator to the arm, storage, hotel, scanner, stamper and three thermocyclers. Workflows use `w.step(instrument_type, op, plate[, dst], seconds=...)` for these instruments. Design: `docs/superpowers/specs/2026-10-31-libprep-capture-design.md`.
+
+```
+.venv/bin/python -m workcell live examples/libprep_workcell.yaml examples/libprep_capture.py --seed 0 --time-limit 60
+```
+```
+planned makespan: 11:19:41
+actual makespan:  12:10:24
+re-plans: 15 (11 adopted, 4 not worth it, 0 failed)
+idle hold: limit 300s, parks 17, violations 3 (worst 714s)
+completed: 3/3
+```
+
+One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html (once merged to master).
 
 ## Quickstart
 

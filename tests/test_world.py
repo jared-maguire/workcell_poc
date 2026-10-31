@@ -79,3 +79,25 @@ def test_store_and_tray_roundtrip_and_tc_run(workcell_small):
     w.apply(I("store1", "store", plate="S0001"))
     assert w.presented("store1") is None and w.location("S0001") == "store1"
     assert w.snapshot()["doors"]["tc1"] is True
+
+
+@pytest.fixture
+def lab():
+    from conftest import SMALL
+    from workcell.config import parse_workcell
+    return parse_workcell({**SMALL, "instruments": SMALL["instruments"] + [
+        {"id": "lh1", "type": "liquid_handler"}, {"id": "hs1", "type": "heated_shaker"}]})
+
+
+def test_step_plate_missing(lab):
+    w = world(lab)
+    with pytest.raises(InstrumentError, match="plate S0001 not in hs1"):
+        w.apply(I("hs1", "shake", plates=["S0001"]))
+
+
+def test_step_ok(lab):
+    w = world(lab, S0001="hs1", E0001="lh1.dst")
+    w.apply(I("hs1", "shake", plates=["S0001"]))
+    w.apply(I("lh1", "magnet_wash", plates=["E0001"]))
+    with pytest.raises(InstrumentError, match="not in lh1"):
+        w.apply(I("lh1", "pool", plates=["S0001", "E0001"]))

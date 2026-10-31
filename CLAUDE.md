@@ -6,9 +6,12 @@ Simulation playground for lab workcell control software: a workflow DSL is compi
 
 ```
 python -m venv .venv && .venv/bin/pip install -e .     # Python 3.12+; ortools, pyyaml, pygments, pytest
-.venv/bin/pytest -q                                     # full suite, ~50 s (CP-SAT tests dominate)
+.venv/bin/pip install -e '.[dev]'                       # adds pytest, pytest-xdist
+.venv/bin/pytest -q                                     # fast suite, parallel, ~1 min (skips slow)
+.venv/bin/pytest -q -m slow                             # CP-SAT-heavy tests, ~1–2 min
 .venv/bin/python -m workcell run examples/workcell.yaml examples/pcr_batch.py --out out/report.html
 .venv/bin/python -m workcell scale --workflows 100 --time-limit 60 --out out/scale100.html   # ~4 min
+.venv/bin/python -m workcell live examples/workcell.yaml examples/pcr_live.py --seed 0     # v2, ~1 min
 ```
 
 `--mode` is repeatable: `greedy[:round_robin|:fifo]`, `greedy_hotel[:round_robin|:fifo]`, `cpsat[:makespan|:sum_completion]`. Exit code 2 = config/compile/input error; deadlocks and alarms are results (exit 0).
@@ -19,6 +22,15 @@ python -m venv .venv && .venv/bin/pip install -e .     # Python 3.12+; ortools, 
 
 Planners never touch the simulator or report; a `Plan` (bound blocks + start times + bindings + status) is all downstream code sees.
 
+## v2 live mode (`workcell/live/`, branch v2)
+
+- `noise.py` seeded actual durations (draw depends only on seed, block id, instruction index) · `order.py` plan-order graph (`plan_preds`: deps, per-instrument/plate order, nest handoffs) + `project`/`max_push` · `executor.py` event loop (jumps between events; follows the plan as an order; checks for long delays whenever any block finishes — a still-running overrun counts, estimated as ending now — and blames the most-overrun block; adopts a re-plan only if it beats sliding by ≥ threshold, else the projection becomes the new baseline) · `session.py` `run_live`, as-run plan, `LiveStats`.
+- **Times:** integer seconds. Only `@workflow(times=...)` workflows use rules 1–2 (op `seconds=`/thermocycle program sum, then the workflow table); everything else falls back to workcell `durations`, exactly as v1.
+- **CP-SAT in live mode:** `plan_cpsat(..., deterministic=True)` = 8 interleaved workers, seed 0, deterministic-time limit, solved in a child process with retry (OR-Tools 9.15 on Python 3.14 sometimes aborts with heap corruption). Same inputs → same plan, across processes. Initial plan is warm-started with `hint="serial"` (v2 never uses greedy). Re-plans: `replan_cpsat` (phase 1 makespan, phase 2 churn with makespan held).
+- **Idle hold** (`max_idle_hold`, live default 300 s; spec `docs/superpowers/specs/2026-10-31-max-idle-hold-design.md`): `idle.py` defines gaps (a plate in an instrument nest between two of its own blocks) and compile-level `hold_chains`; `parking.py` builds park blocks (greedy_hotel shape: `<removal>.park`, removal rewritten to start from the spot). CP-SAT models each chain's removal as direct or parked at any hotel/storage nest; initial plans enforce the limit hard via `plan_idle_hold` (half budget without the limit, half with it warm-started — a cold limited solve barely beats the serial plan), re-plans soft. Objective adds park delay + `PARK_COST` per park (a total-idle-time term cost ~3 h of plan quality). The executor also re-plans on new projected idle violations and does "lab-tech parks": a waiting plate whose removal hasn't started by its deadline goes to the hotel at once (order graph edited in place — re-sorting from shifted starts mis-pairs nest handoffs). Storage ops are 60 s in `pcr_live.py`; hotels have none.
+- **Lab steps** (`w.step(itype, op, plate[, dst], seconds=)`): generic timed steps on `STEP_TYPES` (config.py: liquid_handler, heated_shaker, plate_sealer, plate_peeler, centrifuge, plate_reader, vacuum_concentrator). Two plates only on `TWO_POSITION_TYPES` (head_stamper, liquid_handler: `.src`/`.dst`; one plate → `.dst`); a workflow keeps one variable per two-position type (`?lh`), numbered ones otherwise (`?hs0`…), and consecutive steps on the instrument type a plate already sits on stay there. The world only checks the plates are in the instrument. Demo: `examples/libprep_capture.py` + `libprep_workcell.yaml` (3 batches, `--time-limit 60`, ~5 min).
+- **Validation:** the as-run schedule (actual starts/durations) must pass `validate_plan(asrun, batch, check_durations=False)`. In live mode lock waits are normal (not a bug signal). `Plan.end()` uses planned durations — use actual ends for started blocks.
+
 ## Invariants (break these and the planners, validator, and executor disagree)
 
 - **Blocks:** the compiler groups instructions into blocks that start and end with every plate resting in a nest. A block's lock set = `block.instruments` (derived from its instructions; every block `check_status`es each instrument whose nest it touches) ∪ `block.plates`. The compiler never emits acquire/release; the executor locks all-or-nothing.
@@ -26,7 +38,7 @@ Planners never touch the simulator or report; a `Plan` (bound blocks + start tim
 - **Instrument variables** are `?name` / `?name.suffix` (e.g. `?tc0`, `?stamp.src`); single-candidate vars are substituted at compile time. Nest ids: `<instrument>` or `stamp1.src`/`stamp1.dst`.
 - **Occupancy:** a plate occupies a nest from the START of the block that places it to the START of the block that removes it (initial stays from t=0). `plan.plate_stays` is the one definition — validator, greedy, CP-SAT, and stats all use it. (The spec originally said "from the END"; that let a plate be placed onto an occupied nest.)
 - **Validator is the oracle:** every planner's plan must pass `validate_plan(plan, batch) == []` and execute with no alarm and no lock waits. Planner-inserted blocks are only allowed as greedy_hotel `park` blocks (`inserted=True`, id `<block>.park`; the parked move keeps its id/dst, src becomes the hotel, gains the park dep).
-- Times are integer minutes; durations come from the workcell's `durations` (`<type>.<op>`, then `<op>`, then `default`). The example sets `check_status: 0`.
+- Times are integer seconds (v1 durations of 1 = 1 s; the v1 report still labels them "min"); durations come from the workcell's `durations` (`<type>.<op>`, then `<op>`, then `default`), or for `@workflow(times=...)` workflows from the workflow first. The example sets `check_status: 0`.
 
 ## Expected behavior that looks like a bug but isn't
 

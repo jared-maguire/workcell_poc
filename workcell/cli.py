@@ -1,14 +1,17 @@
-"""Command line interface: `python -m workcell run WORKCELL BATCH`."""
+"""Command line interface: `python -m workcell run|scale|live ...`."""
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import yaml
 
 from workcell.compiler import CompileError
 from workcell.config import ConfigError, parse_workcell
-from workcell.dsl import BatchFileError
+from workcell.config import load_workcell
+from workcell.dsl import BatchFileError, load_batch
+from workcell.live.session import run_live
 from workcell.planners import MODES
 from workcell.report import write_report
 from workcell.run import run_files, run_session
@@ -42,6 +45,23 @@ def _parser() -> argparse.ArgumentParser:
     scale.add_argument("--time-limit", type=float, default=60, metavar="S",
                        help="CP-SAT time limit in seconds (default 60)")
     scale.add_argument("--out", default="out/scale.html", help="report path (default out/scale.html)")
+    live = sub.add_parser("live", help="run a batch live: random step times, re-plan on long delays")
+    live.add_argument("workcell", help="workcell YAML file")
+    live.add_argument("batch", help="Python file defining batch() (use @workflow(times=...) for real times)")
+    live.add_argument("--seed", type=int, default=0)
+    live.add_argument("--replan-threshold", type=int, default=300, metavar="SECONDS",
+                      help="re-plan when a delay would push a step later by more than this (default 300)")
+    live.add_argument("--replan-time-limit", type=float, default=2, metavar="S",
+                      help="CP-SAT deterministic seconds per re-plan phase (default 2)")
+    live.add_argument("--time-limit", type=float, default=30, metavar="S",
+                      help="CP-SAT deterministic seconds for the initial plan (default 30)")
+    live.add_argument("--noise", type=float, default=0.05, help="relative sigma of step times (default 0.05)")
+    live.add_argument("--delay-prob", type=float, default=0.02,
+                      help="chance a step runs 2-5x long (default 0.02)")
+    live.add_argument("--max-idle-hold", type=int, default=300, metavar="SECONDS",
+                      help="longest an instrument may sit idle holding a plate; longer waits park "
+                           "the plate in a hotel or storage (default 300; 0 disables)")
+    live.add_argument("--out", default="out/live.html", help="report path (default out/live.html)")
     return p
 
 
@@ -71,9 +91,38 @@ def _print_session(session, out: str) -> None:
     print(f"report: {write_report(session, out)}")
 
 
+def _hms(sec: int) -> str:
+    return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+
+def _live(args) -> int:
+    specs, source = load_batch(args.batch)
+    ls = run_live(load_workcell(args.workcell), specs, seed=args.seed, noise=args.noise,
+                  delay_prob=args.delay_prob, replan_threshold=args.replan_threshold,
+                  replan_time_limit=args.replan_time_limit, time_limit=args.time_limit,
+                  workcell_source=Path(args.workcell).read_text(), batch_source=source,
+                  max_idle_hold=args.max_idle_hold)
+    L, s = ls.live, ls.session.runs[0].stats
+    print(f"seed: {L.seed}")
+    print(f"planned makespan: {_hms(L.planned_makespan)}")
+    print(f"actual makespan:  {_hms(L.actual_makespan)}")
+    print(f"re-plans: {L.replans} ({L.adopted_replans} adopted, {L.not_worth_it} not worth it, "
+          f"{L.failed_replans} failed)")
+    if L.max_idle_hold:
+        print(f"idle hold: limit {L.max_idle_hold}s, parks {L.parks}, "
+              f"violations {L.idle_violations} (worst {L.worst_idle}s)")
+    print(f"completed: {s.completed}/{s.total}")
+    if ls.errors:
+        print(f"as-run validation errors: {len(ls.errors)}", file=sys.stderr)
+    print(f"report: {write_report(ls.session, args.out)}")
+    return 0
+
+
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "live":
+            return _live(args)
         if args.command == "scale":
             session = _scale_session(args, argv)
         else:

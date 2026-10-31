@@ -1,13 +1,19 @@
 """Compiler: workflow specs -> per-workflow DAGs of synchronized blocks (spec §6)."""
 from __future__ import annotations
 
-from workcell.config import Workcell
+from workcell.config import INSTRUMENT_TYPES, STEP_TYPES, TWO_POSITION_TYPES, Workcell
 from workcell.dsl import Op, WorkflowSpec
 from workcell.ir import Block, CompiledBatch, CompiledWorkflow, Instruction, PlateMove
 
 
 class CompileError(ValueError):
     pass
+
+
+# instrument variable prefixes for `step` instruments (`?lh`, `?hs0`, `?seal0`, ...)
+_PREFIX = {"liquid_handler": "lh", "heated_shaker": "hs", "plate_sealer": "seal",
+           "plate_peeler": "peel", "centrifuge": "spin", "plate_reader": "read",
+           "vacuum_concentrator": "dry", "thermocycler": "tc", "head_stamper": "stamp"}
 
 
 def _arm(workcell: Workcell) -> str:
@@ -25,15 +31,29 @@ def _type_of(workcell: Workcell, instrument: str, var_types: dict[str, str] | No
     return workcell.instruments[instrument].type
 
 
+def _duration(workcell: Workcell, itype: str, op: str, times: dict[str, int] | None,
+              own: int | None = None) -> int:
+    """Instruction duration: op's own seconds (timed only), workflow times table
+    (timed only), then workcell durations."""
+    if times is not None:
+        if own is not None:
+            return own
+        for key in (f"{itype}.{op}", op):
+            if key in times:
+                return times[key]
+    return workcell.duration(itype, op)
+
+
 def transport_instructions(workcell: Workcell, plate: str, src: str, dst: str,
-                           var_types: dict[str, str] | None = None) -> list[Instruction]:
+                           var_types: dict[str, str] | None = None,
+                           times: dict[str, int] | None = None) -> list[Instruction]:
     """Instructions that move `plate` from nest `src` to nest `dst` with the arm."""
     arm = _arm(workcell)
     src_owner, dst_owner = workcell.nest_owner(src), workcell.nest_owner(dst)
     types = {name: _type_of(workcell, name, var_types) for name in (src_owner, arm, dst_owner)}
 
     def ins(instrument: str, op: str, args: dict | None = None) -> Instruction:
-        return Instruction(instrument, op, args or {}, workcell.duration(types[instrument], op))
+        return Instruction(instrument, op, args or {}, _duration(workcell, types[instrument], op, times))
 
     out = [ins(name, "check_status") for name in dict.fromkeys((src_owner, arm, dst_owner))]
     if types[src_owner] == "storage":
@@ -124,6 +144,7 @@ class _WorkflowCompiler:
         self.home = {pid: workcell.plates[bc].location for pid, bc in barcodes.items()}
         self.loc = dict(self.home)
         self.stamper: str | None = None
+        self.two_pos: dict[str, str] = {}
 
     # -- instruments -------------------------------------------------------
     def _instrument(self, itype: str, var: str) -> str:
@@ -136,14 +157,23 @@ class _WorkflowCompiler:
         self.var_types[var] = itype
         return var
 
+    def _two_position(self, itype: str) -> str:
+        """One instrument variable per workflow per two-position lab type (a workflow keeps
+        its plates on one liquid handler)."""
+        if itype not in self.two_pos:
+            self.two_pos[itype] = self._instrument(itype, f"?{_PREFIX[itype]}")
+        return self.two_pos[itype]
+
     def _numbered(self, itype: str, prefix: str) -> str:
         k = self.counters.get(prefix, 0)
         self.counters[prefix] = k + 1
         return self._instrument(itype, f"?{prefix}{k}")
 
-    def _ins(self, instrument: str, op: str, args: dict | None = None) -> Instruction:
+    def _ins(self, instrument: str, op: str, args: dict | None = None,
+             own: int | None = None) -> Instruction:
         itype = _type_of(self.wc, instrument, self.var_types)
-        return Instruction(instrument, op, args or {}, self.wc.duration(itype, op))
+        return Instruction(instrument, op, args or {},
+                           _duration(self.wc, itype, op, self.spec.times, own))
 
     # -- emission ----------------------------------------------------------
     def _emit(self, kind, label, instructions, moves, plates, deps) -> str:
@@ -154,7 +184,8 @@ class _WorkflowCompiler:
 
     def _transport(self, kind, pid: str, dst: str, deps: list[str]) -> str:
         bc, src = self.barcodes[pid], self.loc[pid]
-        instrs = transport_instructions(self.wc, bc, src, dst, self.var_types)
+        instrs = transport_instructions(self.wc, bc, src, dst, self.var_types,
+                                      self.spec.times)
         self.loc[pid] = dst
         return self._emit(kind, f"{kind} {bc} {src} → {dst}", instrs,
                           [PlateMove(bc, src, dst)], {bc}, deps)
@@ -202,14 +233,37 @@ class _WorkflowCompiler:
                 inst = self.stamper
                 nests = [f"{inst}.src", f"{inst}.dst"]
                 src, dst = (self.barcodes[p] for p in op.plates)
-                instr = self._ins(inst, "stamp", {"src": src, "dst": dst})
+                instr = self._ins(inst, "stamp", {"src": src, "dst": dst},
+                                  own=op.params.get("seconds"))
                 label = f"stamp {src} → {dst}"
+            elif op.kind == "step":
+                itype, bcs = op.params["itype"], [self.barcodes[p] for p in op.plates]
+                if itype in INSTRUMENT_TYPES and itype not in STEP_TYPES:
+                    raise CompileError(
+                        f"step on {itype} in {self.wf_id}: steps run on lab instruments "
+                        f"({', '.join(sorted(STEP_TYPES))}); use stamp/thermocycle/store")
+                if itype in TWO_POSITION_TYPES:
+                    inst = self._two_position(itype)
+                    nests = [f"{inst}.src", f"{inst}.dst"][-len(op.plates):]
+                else:
+                    here = self.loc[op.plates[0]]
+                    if _type_of(self.wc, self.wc.nest_owner(here), self.var_types) == itype:
+                        inst = here         # already on one: stay (no move to itself)
+                    else:
+                        inst = self._numbered(itype, _PREFIX.get(itype, itype))
+                    nests = [inst]
+                instr = self._ins(inst, op.params["op"], {"plates": bcs},
+                                  own=op.params["seconds"])
+                label = f"{op.params['op']} {' '.join(bcs)}"
             elif op.kind == "thermocycle":
                 inst = self._numbered("thermocycler", "tc")
                 nests = [inst]
                 bc = self.barcodes[op.plates[0]]
-                instr = self._ins(inst, "run_program",
-                                  {"plate": bc, "program": op.params["program"]})
+                program = op.params["program"]
+                own = (round(sum(m for _, m in program) * 60)
+                       if self.spec.times is not None else None)
+                instr = self._ins(inst, "run_program", {"plate": bc, "program": program},
+                                  own=own)
                 label = f"thermocycle {bc}"
             else:
                 raise CompileError(f"unknown op kind {op.kind!r} in {self.wf_id}")

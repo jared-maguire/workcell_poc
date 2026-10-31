@@ -1,3 +1,4 @@
+import pytest
 from workcell.planners import make_plan
 from workcell.planners.cpsat import plan_cpsat
 from workcell.planners.greedy import plan_greedy
@@ -12,6 +13,7 @@ def test_cpsat_valid_and_executes(compiled_small):
     t = execute(p, b); assert t.alarm is None and t.lock_waits == []
 
 
+@pytest.mark.slow
 def test_cpsat_beats_or_ties_greedy(compiled_small):
     # Ruling R6(c): pure greedy deadlocks on >=2 PCRs, so compare against greedy_hotel fifo.
     b = compiled_small(4)

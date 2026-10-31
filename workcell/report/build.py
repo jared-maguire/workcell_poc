@@ -97,6 +97,7 @@ def report_data(session: Session) -> dict:
                       "blocks": [_compiled_block(b) for b in wf.blocks]}
                      for wf in batch.workflows],
         "runs": [_run(r) for r in session.runs],
+        "live": _jsonable(session.live),
     }
 
 

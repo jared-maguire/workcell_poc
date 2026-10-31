@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from workcell.idle import idle_gaps, violations
 from workcell.ir import CompiledBatch
 from workcell.plan import Plan, plate_stays
 
@@ -21,8 +22,9 @@ def _is_park(block) -> bool:
     return block.inserted and block.kind == "park"
 
 
-def _compare(plan: Plan, batch: CompiledBatch, bid: str) -> list[str]:
-    """Check one plan block against its compiled block bound under the plan's bindings."""
+def _compare(plan: Plan, batch: CompiledBatch, bid: str, check_durations: bool) -> list[str]:
+    """Check one plan block against its compiled block bound under the plan's bindings
+    (instruction durations too, unless `check_durations` is False)."""
     comp, got = batch.block(bid), plan.blocks[bid]
     try:
         want = comp.bind(plan.bindings.get(comp.workflow, {}))
@@ -40,12 +42,19 @@ def _compare(plan: Plan, batch: CompiledBatch, bid: str) -> list[str]:
             g.plate != w.plate or g.dst != w.dst or (g.src != w.src and w.plate not in parked)
             for g, w in zip(got.moves, want.moves)):
         errs.append(f"block {bid} moves differ from compiled moves")
-    if want.kind in ("op", "scan") and got.instructions != want.instructions:
+    def shape(ins):
+        return [(i.instrument, i.op, i.args) + ((i.duration,) if check_durations else ())
+                for i in ins]
+    if want.kind in ("op", "scan") and shape(got.instructions) != shape(want.instructions):
         errs.append(f"block {bid} instructions differ from compiled instructions")
     return errs
 
 
-def validate_plan(plan: Plan, batch: CompiledBatch) -> list[str]:
+def validate_plan(plan: Plan, batch: CompiledBatch, check_durations: bool = True,
+                  max_idle_hold: int | None = None) -> list[str]:
+    """Errors in `plan` (empty if valid). With `check_durations=False` (a live as-run plan,
+    whose blocks carry actual durations) instruction durations may differ from compiled.
+    With `max_idle_hold`, a plate idling longer than that in an instrument nest is an error."""
     errors: list[str] = []
     compiled = {b.id for b in batch.all_blocks()}
     scheduled = [b for b in plan.start if b in plan.blocks]
@@ -74,7 +83,7 @@ def validate_plan(plan: Plan, batch: CompiledBatch) -> list[str]:
     # plan blocks must match the compiled blocks
     for bid in plan.blocks:
         if bid in compiled:
-            errors += _compare(plan, batch, bid)
+            errors += _compare(plan, batch, bid, check_durations)
 
     # moves must use real nests
     nests = batch.workcell.nests()
@@ -158,6 +167,14 @@ def validate_plan(plan: Plan, batch: CompiledBatch) -> list[str]:
     for plate, ivs in spans.items():
         for a, b in _overlaps(ivs):
             errors.append(f"borrow spans of plate {plate} overlap in workflows {a} and {b}")
+
+    # idle holds
+    if max_idle_hold:
+        ends = {b: plan.end(b) for b in scheduled}
+        live = {b: plan.start[b] for b in scheduled}
+        for g in violations(idle_gaps(plan.blocks, live, ends, batch), max_idle_hold):
+            errors.append(f"plate {g.plate} idles {g.length}s in {g.nest} between {g.prev} "
+                          f"and {g.next} (limit {max_idle_hold}s)")
 
     # completeness
     if plan.finished:

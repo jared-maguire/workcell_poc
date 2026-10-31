@@ -9,8 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from workcell.config import TWO_POSITION_TYPES
+
 
 @dataclass(frozen=True)
+
 class PlateHandle:
     id: str
 
@@ -31,7 +34,7 @@ class PlateDecl:
 @dataclass
 class Op:
     id: str
-    kind: Literal["stamp", "thermocycle", "store"]
+    kind: Literal["stamp", "thermocycle", "store", "step"]
     plates: tuple[str, ...]
     params: dict
     after: tuple[str, ...]
@@ -44,6 +47,7 @@ class WorkflowSpec:
     plates: dict[str, PlateDecl]
     ops: list[Op]
     func: Callable
+    times: dict[str, int] | None = None   # set => timed workflow (seconds)
 
 
 class Workflow:
@@ -90,10 +94,25 @@ class Workflow:
         self.ops.append(op)
         return op.id
 
-    def stamp(self, src: PlateHandle, dst: PlateHandle, after=None) -> str:
+    def stamp(self, src: PlateHandle, dst: PlateHandle, after=None,
+              seconds: int | None = None) -> str:
         if src.id == dst.id:
             raise ValueError("stamp: src and dst must be different plates")
-        return self._add("stamp", (src, dst), {}, after)
+        params = {} if seconds is None else {"seconds": seconds}
+        return self._add("stamp", (src, dst), params, after)
+
+    def step(self, itype: str, op: str, *plates: PlateHandle, seconds: int, after=None) -> str:
+        """A timed step (`seconds`) on an instrument of type `itype`: one plate, or two (src,
+        dst) on a two-position instrument (liquid handler, head stamper)."""
+        if len(plates) not in (1, 2):
+            raise ValueError(f"step {op!r}: takes one or two plates, got {len(plates)}")
+        if len(plates) == 2:
+            if itype not in TWO_POSITION_TYPES:
+                raise ValueError(f"step {op!r}: two plates need a two-position instrument "
+                                 f"({', '.join(sorted(TWO_POSITION_TYPES))}), not {itype}")
+            if plates[0].id == plates[1].id:
+                raise ValueError(f"step {op!r}: src and dst must be different plates")
+        return self._add("step", plates, {"itype": itype, "op": op, "seconds": seconds}, after)
 
     def thermocycle(self, plate: PlateHandle, program, after=None) -> str:
         return self._add("thermocycle", (plate,), {"program": program}, after)
@@ -104,7 +123,10 @@ class Workflow:
         return op_id
 
 
-def workflow(func: Callable) -> Callable[..., WorkflowSpec]:
+def workflow(func: Callable | None = None, *, times: dict[str, int] | None = None):
+    """Decorate a workflow function: `@workflow` or `@workflow(times={...})`."""
+    if func is None:
+        return lambda f: workflow(f, times=dict(times) if times is not None else None)
     sig = inspect.signature(func)
 
     @functools.wraps(func)
@@ -114,7 +136,7 @@ def workflow(func: Callable) -> Callable[..., WorkflowSpec]:
         bound.apply_defaults()
         call_args = {k: v for k, v in bound.arguments.items() if k != next(iter(sig.parameters))}
         func(*bound.args, **bound.kwargs)
-        return WorkflowSpec(func.__name__, call_args, w.plates, w.ops, func)
+        return WorkflowSpec(func.__name__, call_args, w.plates, w.ops, func, times)
 
     return build
 

@@ -16,6 +16,7 @@ def _run(*args):
                           capture_output=True, text=True, cwd=ROOT)
 
 
+@pytest.mark.slow
 def test_cli_end_to_end(tmp_path):
     out = tmp_path / "r.html"
     r = _run("examples/workcell.yaml", "examples/pcr_batch.py",
@@ -69,6 +70,7 @@ def _write(path, text):
     return str(path)
 
 
+@pytest.mark.slow
 def test_success_criterion_pcr10():
     from workcell.run import run_files
     sess = run_files(ROOT / "examples/workcell.yaml", ROOT / "examples/pcr_batch.py",
@@ -78,3 +80,21 @@ def test_success_criterion_pcr10():
     assert hotel.stats.status == "complete" and hotel.stats.completed == 10 and hotel.errors == []
     assert cpsat.stats.status in ("optimal", "feasible")
     assert cpsat.stats.completed == cpsat.stats.total == 10 and cpsat.errors == []
+
+
+@pytest.mark.slow
+def test_cli_live(tmp_path):
+    out = tmp_path / "l.html"
+    r = subprocess.run([sys.executable, "-m", "workcell", "live", "examples/workcell.yaml",
+                        "examples/pcr_live.py", "--seed", "1", "--time-limit", "3",
+                        "--replan-time-limit", "0.5", "--out", str(out)],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    assert "re-plans:" in r.stdout and "completed: 10/10" in r.stdout and out.exists()
+    assert "idle hold: limit 300s" in r.stdout
+
+
+def test_cli_live_bad_file():
+    r = subprocess.run([sys.executable, "-m", "workcell", "live", "examples/workcell.yaml", "nope.py"],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 2

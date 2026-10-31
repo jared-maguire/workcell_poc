@@ -78,3 +78,34 @@ def test_data_escapes_html_comment_and_script_open(session, monkeypatch):
 def test_write_report(session, tmp_path):
     p = write_report(session, tmp_path / "sub" / "r.html")
     assert p.exists() and p.read_text().startswith("<!doctype html>")
+
+
+def test_live_report_data(workcell_small):
+    from conftest import EXAMPLES
+    from workcell.dsl import load_batch
+    from workcell.live.session import run_live
+    specs, _ = load_batch(EXAMPLES / "pcr_live.py")
+    ls = run_live(workcell_small, specs[:3], seed=1, delay_prob=0.2, replan_threshold=60,
+                  time_limit=1, replan_time_limit=0.3)
+    d = data_of(build_report(ls.session))
+    assert d["live"]["seed"] == 1 and isinstance(d["live"]["replans"], list)
+    assert set(d["live"]["stats"]) >= {"replans", "adopted_replans", "not_worth_it", "reassignments",
+                                       "total_delay", "planned_makespan", "actual_makespan",
+                                       "max_idle_hold", "parks", "idle_replans", "idle_violations",
+                                       "worst_idle"}
+    assert d["live"]["max_idle_hold"] == 300
+    assert all("reason" in e and "idle_before" in e for e in d["live"]["replans"])
+    html = build_report(ls.session)
+    assert "idle-hold limit" in html and "idle-hold violations" in html
+    assert len(d["runs"]) == 1 and d["runs"][0]["mode"] == "live"
+
+
+def test_v1_report_has_no_live(session):
+    assert data_of(build_report(session))["live"] is None
+
+
+def test_new_instrument_type_labels(session):
+    html = build_report(session)
+    assert all(label in html for label in
+               ('liquid_handler: "liquid handler"', 'vacuum_concentrator: "concentrator"',
+                'liquid_handler: "#d4a72c"'))
