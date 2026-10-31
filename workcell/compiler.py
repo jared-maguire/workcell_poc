@@ -1,16 +1,18 @@
 """Compiler: workflow specs -> per-workflow DAGs of synchronized blocks (spec §6)."""
 from __future__ import annotations
 
+import itertools
+
 from workcell.config import INSTRUMENT_TYPES, STEP_TYPES, TWO_POSITION_TYPES, Workcell
 from workcell.dsl import Op, WorkflowSpec
-from workcell.ir import Block, CompiledBatch, CompiledWorkflow, Instruction, PlateMove
+from workcell.ir import Block, CompiledBatch, CompiledWorkflow, Instruction, PlateMove, resolve
 
 
 class CompileError(ValueError):
     pass
 
 
-# instrument variable prefixes for `step` instruments (`?lh`, `?hs0`, `?seal0`, ...)
+# instrument variable prefixes for `step` instruments (`?lh0`, `?hs0`, `?seal0`, ...)
 _PREFIX = {"liquid_handler": "lh", "heated_shaker": "hs", "plate_sealer": "seal",
            "plate_peeler": "peel", "centrifuge": "spin", "plate_reader": "read",
            "vacuum_concentrator": "dry", "thermocycler": "tc", "head_stamper": "stamp"}
@@ -233,7 +235,6 @@ class _WorkflowCompiler:
         self.home = {pid: workcell.plates[bc].location for pid, bc in barcodes.items()}
         self.loc = dict(self.home)
         self.stamper: str | None = None
-        self.two_pos: dict[str, str] = {}
 
     # -- instruments -------------------------------------------------------
     def _instrument(self, itype: str, var: str) -> str:
@@ -245,13 +246,6 @@ class _WorkflowCompiler:
         self.variables[var] = list(candidates)
         self.var_types[var] = itype
         return var
-
-    def _two_position(self, itype: str) -> str:
-        """One instrument variable per workflow per two-position lab type (a workflow keeps
-        its plates on one liquid handler)."""
-        if itype not in self.two_pos:
-            self.two_pos[itype] = self._instrument(itype, f"?{_PREFIX[itype]}")
-        return self.two_pos[itype]
 
     def _numbered(self, itype: str, prefix: str) -> str:
         k = self.counters.get(prefix, 0)
@@ -265,19 +259,29 @@ class _WorkflowCompiler:
                            _duration(self.wc, itype, op, self.spec.times, own))
 
     # -- emission ----------------------------------------------------------
-    def _emit(self, kind, label, instructions, moves, plates, deps) -> str:
+    def _emit(self, kind, label, instructions, moves, plates, deps, variants=None) -> str:
         bid = f"{self.wf_id}/{len(self.blocks):02d}"
         self.blocks.append(Block(bid, self.wf_id, kind, label, instructions, moves,
-                                 set(plates), list(dict.fromkeys(deps))))
+                                 set(plates), list(dict.fromkeys(deps)), variants=variants))
         return bid
 
     def _transport(self, kind, pid: str, dst: str, deps: list[str]) -> str:
         bc, src = self.barcodes[pid], self.loc[pid]
-        instrs = transport_instructions(self.wc, bc, src, dst, self.var_types,
-                                      self.spec.times)
+        variants = None
+        try:
+            instrs = transport_instructions(self.wc, bc, src, dst, self.var_types,
+                                            self.spec.times, self.variables)
+        except AmbiguousRoute:      # the route depends on the binding: one variant each
+            names = sorted({n.partition('.')[0] for n in (src, dst) if n.startswith('?')})
+            variants = {}
+            for combo in itertools.product(*(self.variables[v] for v in names)):
+                bind = dict(zip(names, combo))
+                variants[tuple(bind.items())] = transport_instructions(
+                    self.wc, bc, resolve(src, bind), resolve(dst, bind), times=self.spec.times)
+            instrs = next(iter(variants.values()))
         self.loc[pid] = dst
         return self._emit(kind, f"{kind} {bc} {src} → {dst}", instrs,
-                          [PlateMove(bc, src, dst)], {bc}, deps)
+                          [PlateMove(bc, src, dst)], {bc}, deps, variants)
 
     def _route(self, pid: str, dst: str, deps: list[str]) -> str | None:
         """Bring plate `pid` to nest `dst`; return the chain's last block id (None if no move)."""
@@ -331,16 +335,14 @@ class _WorkflowCompiler:
                     raise CompileError(
                         f"step on {itype} in {self.wf_id}: steps run on lab instruments "
                         f"({', '.join(sorted(STEP_TYPES))}); use stamp/thermocycle/store")
-                if itype in TWO_POSITION_TYPES:
-                    inst = self._two_position(itype)
-                    nests = [f"{inst}.src", f"{inst}.dst"][-len(op.plates):]
+                here = self.loc[op.plates[0]]
+                owner = self.wc.nest_owner(here)
+                if len(op.plates) == 1 and _type_of(self.wc, owner, self.var_types) == itype:
+                    inst, nests = owner, [here]     # already on one: stay (no move to itself)
                 else:
-                    here = self.loc[op.plates[0]]
-                    if _type_of(self.wc, self.wc.nest_owner(here), self.var_types) == itype:
-                        inst = here         # already on one: stay (no move to itself)
-                    else:
-                        inst = self._numbered(itype, _PREFIX.get(itype, itype))
-                    nests = [inst]
+                    inst = self._numbered(itype, _PREFIX.get(itype, itype))
+                    nests = ([f"{inst}.src", f"{inst}.dst"][-len(op.plates):]
+                             if itype in TWO_POSITION_TYPES else [inst])
                 instr = self._ins(inst, op.params["op"], {"plates": bcs},
                                   own=op.params["seconds"])
                 label = f"{op.params['op']} {' '.join(bcs)}"
