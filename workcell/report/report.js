@@ -422,7 +422,7 @@
           <div class="ih"><span style="color:${instColor(inst.id)}">■</span>${esc(inst.id)}${wide ? `<span class="cap" data-cap="${esc(inst.id)}"></span>` : ""}</div>
           <div class="now"></div>${slots ? `<div class="slots">${slots}</div>` : ""}</div>`;
       }).join("")}</div></div>`).join("");
-    $("#floor").innerHTML = html + `<div class="fgroup" data-elsewhere hidden><h3>elsewhere</h3><div class="members"><div class="inst"><div class="slots"><div class="slot" data-nest=""></div></div></div></div></div>`;
+    $("#floor").innerHTML = html + `<div class="fgroup" data-elsewhere style="visibility:hidden"><h3>elsewhere</h3><div class="members"><div class="inst"><div class="slots"><div class="slot" data-nest=""></div></div></div></div></div>`;
     $$("#floor [data-nest]").forEach(el => { nestEl[el.dataset.nest] = el; });
     $$("#floor [data-inst]").forEach(el => { instEl[el.dataset.inst] = { el, now: $(".now", el) }; });
     $$("#floor [data-cap]").forEach(el => { capEl[el.dataset.cap] = el; });
@@ -492,7 +492,7 @@
       });
     }
     if (moved.length) {
-      elsewhere.closest("[data-elsewhere]").hidden = !elsewhere.children.length;
+      elsewhere.closest("[data-elsewhere]").style.visibility = elsewhere.children.length ? "" : "hidden";
       for (const id in capEl) {
         const inst = instById[id];
         const n = inst.nests.reduce((a, ns) => a + (nestEl[ns.id] ? nestEl[ns.id].querySelectorAll(".plate").length : 0), 0);
