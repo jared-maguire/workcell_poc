@@ -54,6 +54,16 @@ def _vars_of(blk: Block) -> set[str]:
     return {_var(n) for n in names} - {None}
 
 
+def compare_finish(fixed_end: dict[str, int], before: dict[str, int],
+                   after: dict[str, int]) -> tuple[int, int]:
+    """(before, after) finish times over the blocks both plans schedule (a windowed re-plan
+    may add or cut blocks), and no earlier than what has already run."""
+    base = max(fixed_end.values(), default=0)
+    common = before.keys() & after.keys()
+    return (max([base] + [before[b] for b in common]),
+            max([base] + [after[b] for b in common]))
+
+
 def _excess(gaps, limit: int | None) -> int:
     return sum(max(0, g.length - limit) for g in gaps) if limit else 0
 
@@ -219,13 +229,19 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         state = ReplanState(now=t, fixed=fixed, bindings=keep, hint=dict(proj),
                             hint_bindings={wf: dict(v) for wf, v in plan.bindings.items()},
                             parks={d: sp for d, sp in parks.items() if f"{d}.park" in started},
-                            hint_parks=parks, blocks=given)
+                            hint_parks=parks, blocks=given,
+                            effort=4 ** failed_extends if force else 1)
         t0 = time.perf_counter()
         new = replan(state)
         solve = time.perf_counter() - t0
         after = idle_after = None
         if new.finished:
             after = max(fixed[b][1] if b in fixed else new.end(b) for b in new.start)
+            if window:      # compare over the blocks both plans schedule
+                before, after = compare_finish(
+                    {b: e for b, (_, e) in fixed.items()},
+                    {b: proj[b] + blocks[b].duration for b in pending},
+                    {b: new.end(b) for b in new.start if b not in fixed})
             rest = [b for b in new.start if b not in fixed]
             idle_after = _excess(gaps(
                 {**blocks, **{b: new.blocks[b] for b in rest}},
@@ -234,10 +250,12 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         adopt = after is not None and (force or before - after >= threshold or (
             reason == "idle_hold" and idle_after < idle_before))
         if window and (adopt or force):
-            next_extend = t + window // 2
+            # a failed extension is retried right away with 4x the budget (effort)
             failed_extends = 0 if adopt else failed_extends + 1
-            if failed_extends >= 3:
-                raise RuntimeError(f"could not extend the plan at t={t} (3 failed re-plans)")
+            next_extend = t + window // 2 if adopt else t + 1
+            if failed_extends >= 5:
+                raise RuntimeError(f"could not extend the plan at t={t} (5 failed re-plans, "
+                                   f"last with {4 ** 4}x the re-plan budget)")
         reassigned = 0
         if adopt:
             reassigned = sum(new.bindings[wf].get(v) != c

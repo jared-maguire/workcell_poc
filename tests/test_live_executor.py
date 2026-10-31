@@ -204,3 +204,14 @@ def test_tech_park_waits_for_pending_use(timed_batch):
         r = execute_live(b, p, QUIET, bad, 300, max_idle_hold=300)
     assert r.trace.alarm is None and r.trace.completed >= all_ids(b)
     assert "pcr_live-0/11.park" not in r.trace.completed
+
+
+def test_finish_compared_on_common_blocks():
+    """Under a planning window a re-plan may add or cut blocks; before/after finish times are
+    compared over the blocks both plans schedule (plus what has already run)."""
+    from workcell.live.executor import compare_finish
+    fixed_end = {"a": 100}
+    before = {"b": 500, "c": 900}                 # c: cut by the new plan
+    after = {"b": 300, "d": 5000}                 # d: newly planned, far later
+    assert compare_finish(fixed_end, before, after) == (500, 300)
+    assert compare_finish(fixed_end, {}, {}) == (100, 100)

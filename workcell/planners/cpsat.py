@@ -55,6 +55,7 @@ class ReplanState:
     hint_parks: dict[str, str | None] = field(default_factory=dict)
     # bound blocks to take as given: started park blocks and their rewritten removals
     blocks: dict[str, Block] = field(default_factory=dict)
+    effort: float = 1.0     # budget multiplier (raised when a plan extension keeps failing)
 
 
 def _movers(wc, instructions) -> set[str]:
@@ -182,7 +183,8 @@ class _Model:
         # with a window, stays/borrows closed outside it stay open until `open_end`; blocks
         # that need such a nest can still be placed after it (the next window re-plans them)
         self.open_end = horizon
-        if window:
+        if window:          # open stays hold their nest to the window's end, not the horizon
+            self.open_end = min(horizon, (self.q(state.now) if state else 0) + self.q(window))
             horizon *= 2
             bounds = {b: (lo, hi if lo == hi else horizon) for b, (lo, hi) in bounds.items()}
         self.start = {b.id: self.m.NewIntVar(*bounds[b.id], f"s[{b.id}]") for b in blocks}
@@ -207,8 +209,8 @@ class _Model:
         self._gaps()
 
     def _open_end(self, start):
-        """End of a stay/borrow closed outside the window: `open_end`, or its own start if it
-        begins later (such blocks are cut from the plan anyway)."""
+        """End of a stay/borrow closed outside the window: `open_end` (the window's end), or
+        its own start if it begins later (such blocks are cut from the plan anyway)."""
         e = self.m.NewIntVar(0, 2 * self.horizon, "")
         self.m.AddMaxEquality(e, [start, self.open_end])
         return e
@@ -620,6 +622,7 @@ def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2
     With `max_idle_hold` the limit is soft (spec): phase 1 minimizes the total excess over it
     first, phase 2 holds that excess too, and park decisions count as churn."""
     t0 = time.perf_counter()
+    time_limit *= state.effort
     m1 = _Model(batch, state, max_idle_hold, soft=True, grid=grid, window=window)
     m1.objective("makespan")
     m1.hint_starts(state.hint)

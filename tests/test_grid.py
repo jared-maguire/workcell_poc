@@ -1,3 +1,5 @@
+import pytest
+
 from workcell.planners.cpsat import ReplanState, plan_cpsat, plan_idle_hold, replan_cpsat
 from workcell.sim.executor import execute
 from workcell.validate import validate_plan
@@ -101,3 +103,35 @@ def test_grid_given_park_and_started_removal(two_arm):
                      hint_bindings=keep, blocks={d: moved, park.id: park})
     new = replan_cpsat(b, st, time_limit=1, grid=10, max_idle_hold=300)
     assert new.finished
+
+
+@pytest.mark.slow
+def test_window_does_not_inflate_makespan(timed_batch):
+    """A 1 h window may cost a little, not nearly double the makespan (open stays used to
+    hold nests until the whole-batch horizon)."""
+    b = timed_batch(4)
+    p0 = plan_cpsat(b, time_limit=1, deterministic=True, hint="serial", grid=10)
+    whole = execute_live(b, p0, QUIET, lambda st: replan_cpsat(b, st, time_limit=0.3, grid=10), 300)
+    pw = plan_cpsat(b, time_limit=1, deterministic=True, hint="serial", grid=10, window=3600)
+    win = execute_live(b, pw, QUIET,
+                       lambda st: replan_cpsat(b, st, time_limit=0.3, grid=10, window=3600),
+                       300, window=3600)
+    assert win.trace.end_time <= 1.25 * whole.trace.end_time
+
+
+def test_failed_extension_retries_with_more_effort(timed_batch):
+    """A plan extension that finds nothing is retried soon with a bigger budget (effort),
+    not given up after three same-sized tries."""
+    from workcell.plan import Plan
+    b = timed_batch(3)
+    p = plan_cpsat(b, time_limit=1, deterministic=True, hint="serial", window=3600, grid=10)
+    efforts = []
+
+    def flaky(st):
+        efforts.append(st.effort)
+        if len(efforts) <= 3:
+            return Plan("cpsat:makespan", {}, {}, {}, "no_solution", solver_status="UNKNOWN")
+        return replan_cpsat(b, st, time_limit=0.5, grid=10, window=3600)
+    r = execute_live(b, p, QUIET, flaky, 300, window=3600)
+    assert r.trace.completed >= {x.id for x in b.all_blocks()}
+    assert efforts[:4] == [1, 4, 16, 64]
