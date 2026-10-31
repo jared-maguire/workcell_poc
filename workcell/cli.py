@@ -4,10 +4,13 @@ from __future__ import annotations
 import argparse
 import sys
 
+import yaml
+
 from workcell.compiler import CompileError
-from workcell.config import ConfigError
+from workcell.config import ConfigError, parse_workcell
 from workcell.report import write_report
-from workcell.run import run_files
+from workcell.run import run_files, run_session
+from workcell.scenarios import scale_specs, scale_workcell_dict
 
 DEFAULT_MODES = ["greedy", "greedy_hotel", "cpsat:makespan", "cpsat:sum_completion"]
 HEADERS = ["mode", "status", "makespan", "done", "mean latency", "solve s"]
@@ -24,6 +27,17 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--time-limit", type=float, default=30, metavar="S",
                      help="CP-SAT time limit in seconds (default 30)")
     run.add_argument("--out", default="out/report.html", help="report path (default out/report.html)")
+    scale = sub.add_parser("scale", help="run a generated PCR batch at scale")
+    scale.add_argument("--workflows", type=int, required=True, metavar="N")
+    scale.add_argument("--stampers", type=int, default=4)
+    scale.add_argument("--thermocyclers", type=int, default=16)
+    scale.add_argument("--scanners", type=int, default=2)
+    scale.add_argument("--primers", type=int, default=8)
+    scale.add_argument("--mode", action="append", dest="modes", metavar="M",
+                       help=f"planner mode, repeatable (default: {' '.join(DEFAULT_MODES)})")
+    scale.add_argument("--time-limit", type=float, default=60, metavar="S",
+                       help="CP-SAT time limit in seconds (default 60)")
+    scale.add_argument("--out", default="out/scale.html", help="report path (default out/scale.html)")
     return p
 
 
@@ -33,13 +47,16 @@ def _table(rows: list[list[str]]) -> str:
     return "\n".join([fmt(HEADERS), *map(fmt, rows)])
 
 
-def main(argv=None) -> int:
-    args = _parser().parse_args(argv)
-    try:
-        session = run_files(args.workcell, args.batch, args.modes or DEFAULT_MODES, args.time_limit)
-    except (ConfigError, CompileError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
+def _scale_session(args, argv):
+    n = args.workflows
+    data = scale_workcell_dict(args.stampers, args.thermocyclers, args.scanners,
+                               samples=n, primers=args.primers, empties=n)
+    command = "python -m workcell " + " ".join(argv if argv is not None else sys.argv[1:])
+    return run_session(parse_workcell(data), scale_specs(n, args.primers), args.modes or DEFAULT_MODES,
+                       args.time_limit, yaml.safe_dump(data, sort_keys=False), command)
+
+
+def _print_session(session, out: str) -> None:
     rows = []
     for r in session.runs:
         s = r.stats
@@ -47,5 +64,18 @@ def main(argv=None) -> int:
         rows.append([r.mode, s.status, str(s.makespan), f"{s.completed}/{s.total}", lat,
                      f"{s.solve_seconds:.2f}"])
     print(_table(rows))
-    print(f"report: {write_report(session, args.out)}")
+    print(f"report: {write_report(session, out)}")
+
+
+def main(argv=None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "scale":
+            session = _scale_session(args, argv)
+        else:
+            session = run_files(args.workcell, args.batch, args.modes or DEFAULT_MODES, args.time_limit)
+    except (ConfigError, CompileError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    _print_session(session, args.out)
     return 0

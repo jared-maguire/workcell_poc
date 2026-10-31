@@ -31,3 +31,18 @@ Then open `out/report.html` in a browser. Options: `--mode M` (repeatable), `--t
 - `workcell/run.py`, `workcell/cli.py`: orchestration and command line
 - `examples/`: example workcell and PCR batch
 - `tests/`: test suite
+
+## Scale notes
+
+Command: `.venv/bin/python -m workcell scale --workflows 100 --time-limit 60 --out out/scale100.html`
+
+Workcell: 1 arm, 1 storage (208 slots), 1 hotel (500 slots), 4 head stampers, 16 thermocyclers, 2 barcode scanners; 100 samples, 8 primers, 100 empties; 100 PCR workflows (sample `S{i+1:04d}`, primer `P{i % 8 + 1:04d}`); durations default 1, check_status 0.
+
+| mode | status | makespan | completed/total | solve s |
+|---|---|---|---|---|
+| greedy:round_robin | deadlock | 17 | 0/100 | 0.00 |
+| greedy_hotel:round_robin | complete | 2288 | 100/100 | 0.00 |
+| cpsat:makespan | feasible | 2002 | 100/100 | 65.91 |
+| cpsat:sum_completion | feasible | 2003 | 100/100 | 66.13 |
+
+Pure greedy deadlocked almost immediately (t=17, nothing finished). greedy_hotel completed all 100 workflows but its makespan (2288) is about 14% worse than CP-SAT's. CP-SAT found only feasible (not proven optimal) plans within the 60 s limit, with makespan 2002 and 2003; the two objectives ended up nearly identical, and each solve ran about 6 s past the limit.
