@@ -192,6 +192,23 @@ class _Model:
         else:
             raise ValueError(f"unknown CP-SAT objective {objective!r}")
 
+    def churn_objective(self, state: ReplanState, cap: int, weight: int):
+        """Ruling R8 phase 2: hold makespan at `cap` and minimize changes to the current plan —
+        `weight` per binding that differs from `state.hint_bindings`, plus the total distance
+        of each unfixed block's start from its `state.hint`."""
+        for e in self.end.values():
+            self.m.Add(e <= cap)
+        terms = []
+        for (wf, var, cand), lit in self.x.items():
+            if state.hint_bindings.get(wf, {}).get(var) == cand:
+                terms.append(weight * (1 - lit))
+        for bid, h in sorted(state.hint.items()):
+            if bid in self.start and bid not in state.fixed:
+                d = self.m.NewIntVar(0, self.horizon, f"dev[{bid}]")
+                self.m.AddAbsEquality(d, self.start[bid] - h)
+                terms.append(d)
+        self.m.Minimize(sum(terms))
+
     def hint(self):
         """Ruling R6(c): hint from greedy_hotel fifo — compiled block starts and bindings."""
         g = plan_greedy(self.batch, priority="fifo", park=True)
@@ -243,6 +260,38 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
         model.hint_bindings(bindings)
     elif hint not in (None, False):
         raise ValueError(f"unknown CP-SAT hint {hint!r}")
+    return _solve_plan(model, time_limit, deterministic, objective, t0)[0]
+
+
+def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2.0,
+                 reassign_weight: int = 600) -> Plan:
+    """Ruling R8: a low-churn re-plan. Phase 1 minimizes makespan from `state`; phase 2 holds
+    that makespan and minimizes churn against `state.hint`/`state.hint_bindings` (see
+    `_Model.churn_objective`). Both are deterministic and isolated, each with `time_limit`.
+    If phase 2 finds nothing, phase 1's plan is returned. solver_status is "<p1>/<p2>"."""
+    t0 = time.perf_counter()
+    m1 = _Model(batch, state)
+    m1.objective("makespan")
+    m1.hint_starts(state.hint)
+    m1.hint_bindings(state.hint_bindings)
+    first, sol1 = _solve_plan(m1, time_limit, True, "makespan", t0)
+    if not first.finished:
+        return first
+    m2 = _Model(batch, state)
+    m2.churn_objective(state, round(sol1.objective), reassign_weight)
+    m2.hint_starts(first.start)
+    m2.hint_bindings(first.bindings)
+    second, sol2 = _solve_plan(m2, time_limit, True, "makespan", t0)
+    best = second if second.finished else first
+    best.solver_status = f"{sol1.status}/{sol2.status}"
+    best.solve_seconds = time.perf_counter() - t0
+    return best
+
+
+def _solve_plan(model: _Model, time_limit: float, deterministic: bool, objective: str,
+                t0: float) -> tuple[Plan, "_Solution"]:
+    """Solve `model` and turn the solution into a Plan (see plan_cpsat for the parameters)."""
+    batch = model.batch
     solver = cp_model.CpSolver()
     if deterministic:
         solver.parameters.num_workers = 8
@@ -261,7 +310,7 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     if status in ("infeasible", "no_solution"):
         return Plan(mode=mode, blocks={}, start={}, bindings={}, status=status,
                     solve_seconds=time.perf_counter() - t0, objective=objective,
-                    solver_status=sol.status)
+                    solver_status=sol.status), sol
     bindings = {wf.id: {} for wf in batch.workflows}
     for (wf, var, cand), lit in model.x.items():
         if sol.values[lit.Index()]:
@@ -269,7 +318,7 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     return Plan(mode=mode, blocks=bind_batch(batch, bindings),
                 start={bid: sol.values[s.Index()] for bid, s in model.start.items()},
                 bindings=bindings, status=status, solve_seconds=time.perf_counter() - t0,
-                objective=objective, solver_status=sol.status)
+                objective=objective, solver_status=sol.status), sol
 
 
 @dataclass
