@@ -13,6 +13,7 @@ from workcell.plan import Plan, bind_batch
 from workcell.planners.greedy import plan_greedy
 
 Objective = Literal["makespan", "sum_completion"]
+Hint = Literal["greedy", "serial"]
 
 _STATUS = {cp_model.OPTIMAL: "optimal", cp_model.FEASIBLE: "feasible",
            cp_model.INFEASIBLE: "infeasible", cp_model.UNKNOWN: "no_solution"}
@@ -27,11 +28,32 @@ def _var(name: str) -> str | None:
 class ReplanState:
     """What has already happened when re-planning at time `now`: `fixed` maps each done or
     running block to its (start, end); `bindings` are var bindings that must stay; `hint`
-    holds suggested starts (replaces the greedy hint when non-empty)."""
+    holds suggested starts and `hint_bindings` suggested var bindings (when either is
+    non-empty they replace `plan_cpsat`'s own `hint`)."""
     now: int
     fixed: dict[str, tuple[int, int]]
     bindings: dict[str, dict[str, str]]
     hint: dict[str, int] = field(default_factory=dict)
+    hint_bindings: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+def serial_hint(batch: CompiledBatch) -> tuple[dict[str, int], dict[str, dict[str, str]]]:
+    """Ruling R5(b): a trivially valid plan running one block at a time at planned durations.
+    Workflows go in batch order; within one, the next block is the ready one (all deps done)
+    that is a return, else the earliest compiled. Every var takes its first candidate.
+    Returns (starts, bindings)."""
+    t, starts, bindings = 0, {}, {}
+    for wf in batch.workflows:
+        bindings[wf.id] = {var: cands[0] for var, cands in wf.variables.items()}
+        index = {b.id: i for i, b in enumerate(wf.blocks)}
+        todo = list(wf.blocks)
+        while todo:
+            nxt = min((b for b in todo if all(d in starts for d in b.deps)),
+                      key=lambda b: (b.kind != "return", index[b.id]))
+            starts[nxt.id] = t
+            t += nxt.duration
+            todo.remove(nxt)
+    return starts, bindings
 
 
 class _Model:
@@ -176,26 +198,43 @@ class _Model:
             if bid in self.start:
                 self.m.AddHint(self.start[bid], s)
 
+    def hint_bindings(self, bindings: dict[str, dict[str, str]]):
+        """Hint each listed var's literals: 1 for its hinted candidate, 0 for the others."""
+        for (wf, var, cand), lit in self.x.items():
+            if var in bindings.get(wf, {}):
+                self.m.AddHint(lit, bindings[wf][var] == cand)
+
 
 def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
-               time_limit: float = 30.0, hint: bool = True, state: ReplanState | None = None,
-               deterministic: bool = False) -> Plan:
+               time_limit: float = 30.0, hint: Hint | bool | None = True,
+               state: ReplanState | None = None, deterministic: bool = False) -> Plan:
     """Solve the batch with CP-SAT; status "optimal", "feasible", "infeasible" (proven), or
     "no_solution" (time limit / unknown). An invalid model is a bug and raises RuntimeError.
 
-    `state` re-plans from the current time: fixed blocks keep their actual (start, end),
-    the rest start at or after `state.now`. `deterministic` uses one worker, a fixed seed
-    and a deterministic-time limit (`time_limit`) instead of wall time."""
+    `hint` warm-starts the solve: "greedy" (or True) from greedy_hotel fifo, "serial" from
+    `serial_hint`, None (or False) not at all. `state` re-plans from the current time: fixed
+    blocks keep their actual (start, end), the rest start at or after `state.now`; its
+    non-empty `hint`/`hint_bindings` replace `hint`. `deterministic` (ruling R5) uses 8
+    interleaved workers, a fixed seed and a deterministic-time limit (`time_limit`) instead
+    of wall time, so the same inputs give the same plan in any process."""
     t0 = time.perf_counter()
     model = _Model(batch, state)
     model.objective(objective)
-    if state is not None and state.hint:
+    if state is not None and (state.hint or state.hint_bindings):
         model.hint_starts(state.hint)
-    elif hint:
+        model.hint_bindings(state.hint_bindings)
+    elif hint is True or hint == "greedy":
         model.hint()
+    elif hint == "serial":
+        starts, bindings = serial_hint(batch)
+        model.hint_starts(starts)
+        model.hint_bindings(bindings)
+    elif hint not in (None, False):
+        raise ValueError(f"unknown CP-SAT hint {hint!r}")
     solver = cp_model.CpSolver()
     if deterministic:
-        solver.parameters.num_workers = 1
+        solver.parameters.num_workers = 8
+        solver.parameters.interleave_search = True
         solver.parameters.random_seed = 0
         solver.parameters.max_deterministic_time = time_limit
     else:

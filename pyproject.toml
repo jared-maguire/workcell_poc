@@ -16,3 +16,4 @@ include = ["workcell*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: takes ~30 s; still runs by default (deselect with -m 'not slow')"]
