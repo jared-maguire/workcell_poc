@@ -1,3 +1,8 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from workcell.planners.cpsat import ReplanState, plan_cpsat
 from workcell.validate import validate_plan
 
@@ -44,3 +49,28 @@ def test_state_hint_replaces_greedy_hint(timed_batch, monkeypatch):
     state = ReplanState(now=0, fixed={}, bindings={}, hint=dict(p0.start))
     p = plan_cpsat(b, time_limit=5, deterministic=True, state=state)
     assert p.status in ("optimal", "feasible") and validate_plan(p, b) == []
+
+
+_SCRIPT = """
+import json, sys
+sys.path.insert(0, "tests")
+from conftest import EXAMPLES, SMALL
+from workcell.compiler import compile_batch
+from workcell.config import parse_workcell
+from workcell.dsl import load_batch
+from workcell.planners.cpsat import plan_cpsat
+b = compile_batch(parse_workcell(SMALL), load_batch(EXAMPLES / "pcr_live.py")[0][:3])
+p = plan_cpsat(b, time_limit=5, deterministic=True, hint=False)
+print(json.dumps(sorted(p.start.items())))
+print(json.dumps(p.bindings, sort_keys=True))
+"""
+
+
+def test_deterministic_across_processes():
+    """Same inputs give the same plan even under different string-hash seeds (ruling R2)."""
+    root = Path(__file__).resolve().parent.parent
+    outs = [subprocess.run([sys.executable, "-c", _SCRIPT], cwd=root, check=True,
+                           capture_output=True, text=True,
+                           env={**os.environ, "PYTHONHASHSEED": seed}).stdout
+            for seed in ("1", "2")]
+    assert outs[0] and outs[0] == outs[1]

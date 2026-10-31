@@ -95,13 +95,13 @@ class _Model:
         groups = defaultdict(list)
         for b in self.batch.all_blocks():
             concrete = {i for i in b.instruments if _var(i) is None}
-            for inst in b.instruments:
+            for inst in sorted(b.instruments):
                 for name, lit in self._choices(b.workflow, inst):
                     if lit is not None and name in concrete:
                         continue      # already locked by the concrete interval
                     groups[name].append(self._interval(
                         self.start[b.id], self.end[b.id], lit, self.size[b.id], f"{b.id}@{name}"))
-            for plate in b.plates:
+            for plate in sorted(b.plates):
                 groups[plate].append(self._interval(
                     self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{plate}"))
         for ivs in groups.values():
@@ -138,7 +138,7 @@ class _Model:
     def _borrows(self):
         spans = defaultdict(list)
         for wf in self.batch.workflows:
-            for plate in wf.borrowed:
+            for plate in sorted(wf.borrowed):
                 first, last = wf.borrow_span(plate)
                 spans[plate].append(self._interval(self.start[first], self.end[last], None,
                                                    name=f"borrow[{plate}:{wf.id}]"))
