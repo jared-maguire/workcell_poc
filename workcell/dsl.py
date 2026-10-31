@@ -44,6 +44,7 @@ class WorkflowSpec:
     plates: dict[str, PlateDecl]
     ops: list[Op]
     func: Callable
+    times: dict[str, int] | None = None   # set => timed workflow (seconds)
 
 
 class Workflow:
@@ -90,10 +91,12 @@ class Workflow:
         self.ops.append(op)
         return op.id
 
-    def stamp(self, src: PlateHandle, dst: PlateHandle, after=None) -> str:
+    def stamp(self, src: PlateHandle, dst: PlateHandle, after=None,
+              seconds: int | None = None) -> str:
         if src.id == dst.id:
             raise ValueError("stamp: src and dst must be different plates")
-        return self._add("stamp", (src, dst), {}, after)
+        params = {} if seconds is None else {"seconds": seconds}
+        return self._add("stamp", (src, dst), params, after)
 
     def thermocycle(self, plate: PlateHandle, program, after=None) -> str:
         return self._add("thermocycle", (plate,), {"program": program}, after)
@@ -104,7 +107,10 @@ class Workflow:
         return op_id
 
 
-def workflow(func: Callable) -> Callable[..., WorkflowSpec]:
+def workflow(func: Callable | None = None, *, times: dict[str, int] | None = None):
+    """Decorate a workflow function: `@workflow` or `@workflow(times={...})`."""
+    if func is None:
+        return lambda f: workflow(f, times=dict(times) if times is not None else None)
     sig = inspect.signature(func)
 
     @functools.wraps(func)
@@ -114,7 +120,7 @@ def workflow(func: Callable) -> Callable[..., WorkflowSpec]:
         bound.apply_defaults()
         call_args = {k: v for k, v in bound.arguments.items() if k != next(iter(sig.parameters))}
         func(*bound.args, **bound.kwargs)
-        return WorkflowSpec(func.__name__, call_args, w.plates, w.ops, func)
+        return WorkflowSpec(func.__name__, call_args, w.plates, w.ops, func, times)
 
     return build
 

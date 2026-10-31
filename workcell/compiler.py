@@ -25,15 +25,29 @@ def _type_of(workcell: Workcell, instrument: str, var_types: dict[str, str] | No
     return workcell.instruments[instrument].type
 
 
+def _duration(workcell: Workcell, itype: str, op: str, times: dict[str, int] | None,
+              own: int | None = None) -> int:
+    """Instruction duration: op's own seconds (timed only), workflow times table
+    (timed only), then workcell durations."""
+    if times is not None:
+        if own is not None:
+            return own
+        for key in (f"{itype}.{op}", op):
+            if key in times:
+                return times[key]
+    return workcell.duration(itype, op)
+
+
 def transport_instructions(workcell: Workcell, plate: str, src: str, dst: str,
-                           var_types: dict[str, str] | None = None) -> list[Instruction]:
+                           var_types: dict[str, str] | None = None,
+                           times: dict[str, int] | None = None) -> list[Instruction]:
     """Instructions that move `plate` from nest `src` to nest `dst` with the arm."""
     arm = _arm(workcell)
     src_owner, dst_owner = workcell.nest_owner(src), workcell.nest_owner(dst)
     types = {name: _type_of(workcell, name, var_types) for name in (src_owner, arm, dst_owner)}
 
     def ins(instrument: str, op: str, args: dict | None = None) -> Instruction:
-        return Instruction(instrument, op, args or {}, workcell.duration(types[instrument], op))
+        return Instruction(instrument, op, args or {}, _duration(workcell, types[instrument], op, times))
 
     out = [ins(name, "check_status") for name in dict.fromkeys((src_owner, arm, dst_owner))]
     if types[src_owner] == "storage":
@@ -141,9 +155,11 @@ class _WorkflowCompiler:
         self.counters[prefix] = k + 1
         return self._instrument(itype, f"?{prefix}{k}")
 
-    def _ins(self, instrument: str, op: str, args: dict | None = None) -> Instruction:
+    def _ins(self, instrument: str, op: str, args: dict | None = None,
+             own: int | None = None) -> Instruction:
         itype = _type_of(self.wc, instrument, self.var_types)
-        return Instruction(instrument, op, args or {}, self.wc.duration(itype, op))
+        return Instruction(instrument, op, args or {},
+                           _duration(self.wc, itype, op, self.spec.times, own))
 
     # -- emission ----------------------------------------------------------
     def _emit(self, kind, label, instructions, moves, plates, deps) -> str:
@@ -154,7 +170,8 @@ class _WorkflowCompiler:
 
     def _transport(self, kind, pid: str, dst: str, deps: list[str]) -> str:
         bc, src = self.barcodes[pid], self.loc[pid]
-        instrs = transport_instructions(self.wc, bc, src, dst, self.var_types)
+        instrs = transport_instructions(self.wc, bc, src, dst, self.var_types,
+                                      self.spec.times)
         self.loc[pid] = dst
         return self._emit(kind, f"{kind} {bc} {src} → {dst}", instrs,
                           [PlateMove(bc, src, dst)], {bc}, deps)
@@ -202,14 +219,16 @@ class _WorkflowCompiler:
                 inst = self.stamper
                 nests = [f"{inst}.src", f"{inst}.dst"]
                 src, dst = (self.barcodes[p] for p in op.plates)
-                instr = self._ins(inst, "stamp", {"src": src, "dst": dst})
+                instr = self._ins(inst, "stamp", {"src": src, "dst": dst},
+                                  own=op.params.get("seconds"))
                 label = f"stamp {src} → {dst}"
             elif op.kind == "thermocycle":
                 inst = self._numbered("thermocycler", "tc")
                 nests = [inst]
                 bc = self.barcodes[op.plates[0]]
-                instr = self._ins(inst, "run_program",
-                                  {"plate": bc, "program": op.params["program"]})
+                program = op.params["program"]
+                instr = self._ins(inst, "run_program", {"plate": bc, "program": program},
+                                  own=round(sum(m for _, m in program) * 60))
                 label = f"thermocycle {bc}"
             else:
                 raise CompileError(f"unknown op kind {op.kind!r} in {self.wf_id}")
