@@ -344,9 +344,9 @@ class _Model:
             groups[mv.plate].append(self._interval(ks, ke, parked, ksz, f"{k}@{mv.plate}"))
             for sp, lit in sorted(self.park[d].items()):    # arms/handoffs on each route
                 there, back = park_pair_instructions(self.batch, blk, sp)
-                for name in _movers(wc, there):
+                for name in sorted(_movers(wc, there)):
                     groups[name].append(self._interval(ks, ke, lit, ksz, f"{k}@{name}:{sp}"))
-                for name in _movers(wc, back) - _movers(wc, blk.instructions):
+                for name in sorted(_movers(wc, back) - _movers(wc, blk.instructions)):
                     groups[name].append(self._interval(self.start[d], self.end[d], lit,
                                                        self.size[d], f"{d}@{name}:{sp}"))
             for name, lit in self._choices(blk.workflow, wc.nest_owner(mv.src)):

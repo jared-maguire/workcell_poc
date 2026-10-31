@@ -18,6 +18,13 @@ from workcell.run import run_files, run_session
 from workcell.scenarios import scale_specs, scale_workcell_dict
 
 DEFAULT_MODES = ["greedy", "greedy_hotel", "cpsat:makespan", "cpsat:sum_completion"]
+
+
+def default_modes(workcell) -> list[str]:
+    """The default modes, without the greedy planners on a multi-arm workcell (one arm only)."""
+    if len(workcell.of_type("arm")) > 1:
+        return [m for m in DEFAULT_MODES if not m.startswith("greedy")]
+    return list(DEFAULT_MODES)
 HEADERS = ["mode", "status", "makespan", "done", "mean latency", "solve s"]
 
 
@@ -126,7 +133,13 @@ def main(argv=None) -> int:
         if args.command == "scale":
             session = _scale_session(args, argv)
         else:
-            session = run_files(args.workcell, args.batch, args.modes or DEFAULT_MODES, args.time_limit)
+            modes = args.modes
+            if not modes:
+                modes = default_modes(load_workcell(args.workcell))
+                if modes != DEFAULT_MODES:
+                    print("note: several arms; skipping the greedy modes (one arm only)",
+                          file=sys.stderr)
+            session = run_files(args.workcell, args.batch, modes, args.time_limit)
     except (ConfigError, CompileError, BatchFileError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

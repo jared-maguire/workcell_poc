@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from workcell.compiler import compile_batch
+from workcell.compiler import CompileError, compile_batch
 from workcell.config import Workcell, load_workcell
 from workcell.dsl import load_batch
 from workcell.ir import CompiledBatch
@@ -39,6 +39,10 @@ def run_session(workcell: Workcell, specs, modes: list[str], time_limit: float,
     bad = [m for m in modes if m not in MODES]
     if bad:       # before any compiling or solving
         raise ValueError(f"unknown mode(s) {', '.join(bad)}; valid modes: {', '.join(MODES)}")
+    greedy = [m for m in modes if m.startswith("greedy")]
+    if greedy and len(workcell.of_type("arm")) > 1:
+        raise CompileError(f"{', '.join(greedy)}: greedy planners support one arm; this workcell "
+                           f"has {len(workcell.of_type('arm'))} (use the cpsat modes)")
     batch = compile_batch(workcell, specs)
     runs = []
     for mode in modes:

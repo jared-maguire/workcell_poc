@@ -118,3 +118,32 @@ def test_serial_hint_picks_near_candidates(two_arm):
     assert all(v["?tc0"] == "tc1" for v in binds.values())       # stamper is in arm1's zone
     p = Plan("serial", bind_batch(b, binds), starts, binds, "feasible")
     assert validate_plan(p, b) == []
+
+
+_MODEL_SCRIPT = """
+import hashlib, sys
+sys.path.insert(0, 'tests')
+from conftest import TWO_ARM
+from workcell.compiler import compile_batch
+from workcell.config import parse_workcell
+from workcell.dsl import load_batch
+from workcell.planners.cpsat import _Model
+b = compile_batch(parse_workcell(TWO_ARM), load_batch('examples/pcr_live.py')[0][:2])
+m = _Model(b, None, 300)
+m.objective('makespan')
+print(hashlib.sha256(str(m.m.Proto()).encode()).hexdigest())
+"""
+
+
+def test_two_arm_model_same_across_processes():
+    """The multi-arm CP-SAT model (park routes crossing arms included) is built in the same
+    order under any string-hash seed, so deterministic solves give the same plan."""
+    import os
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parent.parent
+    outs = {subprocess.run([sys.executable, "-c", _MODEL_SCRIPT], cwd=root, check=True,
+                           capture_output=True, text=True,
+                           env={**os.environ, "PYTHONHASHSEED": seed}).stdout
+            for seed in ("1", "2", "3", "4")}
+    assert len(outs) == 1 and next(iter(outs))

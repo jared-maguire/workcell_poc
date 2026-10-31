@@ -98,3 +98,18 @@ def test_cli_live_bad_file():
     r = subprocess.run([sys.executable, "-m", "workcell", "live", "examples/workcell.yaml", "nope.py"],
                        capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 2
+
+
+def test_run_greedy_on_multi_arm_is_clear_error():
+    r = subprocess.run([sys.executable, "-m", "workcell", "run", "examples/libprep_2arm.yaml",
+                        "examples/libprep_capture.py", "--mode", "greedy_hotel"],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 2 and "one arm" in r.stderr
+
+
+def test_default_modes_skip_greedy_on_multi_arm():
+    from workcell.cli import default_modes
+    from workcell.config import load_workcell
+    assert default_modes(load_workcell(ROOT / "examples/libprep_2arm.yaml")) == [
+        "cpsat:makespan", "cpsat:sum_completion"]
+    assert default_modes(load_workcell(ROOT / "examples/workcell.yaml"))[0] == "greedy"

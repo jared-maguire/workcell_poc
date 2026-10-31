@@ -51,7 +51,7 @@ idle hold: limit 300s, parks 17, violations 3 (worst 714s)
 completed: 3/3
 ```
 
-One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h.
+One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html.
 
 ### Two arms
 
@@ -68,7 +68,7 @@ idle hold: limit 300s, parks 16, violations 6 (worst 324s)
 completed: 3/3
 ```
 
-At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. The two-arm model is harder for CP-SAT, so it gets a longer budget (`--time-limit 120`, ~7 min). Report: `docs/reports/libprep3_2arm_live.html`. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html (once merged to master).
+At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. The two-arm model is harder for CP-SAT, so it gets a longer budget (`--time-limit 120`, ~7 min). Report: `docs/reports/libprep3_2arm_live.html`.
 
 ## Quickstart
 
