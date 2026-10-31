@@ -28,7 +28,7 @@ class LiveStats:
     failed_replans: int
     reassignments: int
     total_delay: int            # Σ over executed blocks of actual − planned duration
-    planned_makespan: int
+    planned_makespan: int | None     # None when the first plan covers only a window
     actual_makespan: int
     max_idle_hold: int | None = None
     parks: int = 0              # park blocks run
@@ -81,7 +81,7 @@ def _live_stats(batch: CompiledBatch, result: LiveResult, seed: int, threshold: 
         failed_replans=sum(not e.adopted and e.status != "not_worth_it" for e in events),
         reassignments=sum(e.reassigned for e in events),
         total_delay=sum(sum(ds) - planned[bid] for bid, ds in result.actual.items()),
-        planned_makespan=result.plans[0].makespan,
+        planned_makespan=None if result.plans[0].partial else result.plans[0].makespan,
         actual_makespan=result.trace.end_time,
         max_idle_hold=max_idle_hold or None,
         parks=sum(b.endswith(".park") for b in result.actual),
@@ -93,26 +93,32 @@ def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
              delay_prob: float = 0.02, delay_range: tuple[float, float] = (2.0, 5.0),
              replan_threshold: int = 300, replan_time_limit: float = 2.0,
              time_limit: float = 30.0, workcell_source: str = "",
-             batch_source: str = "", max_idle_hold: int | None = 300) -> LiveSession:
-    max_idle_hold = max_idle_hold or None
+             batch_source: str = "", max_idle_hold: int | None = 300, grid: int = 10,
+             window: int | None = 4 * 3600) -> LiveSession:
+    """Plan, run live, and validate what actually happened. CP-SAT plans in units of `grid`
+    seconds and only `window` seconds ahead, extending the plan every window / 2 (None =
+    the whole batch at once)."""
+    max_idle_hold, window = max_idle_hold or None, window or None
     batch = compile_batch(workcell, specs)
     if max_idle_hold:
-        initial = plan_idle_hold(batch, time_limit, max_idle_hold)
+        initial = plan_idle_hold(batch, time_limit, max_idle_hold, grid=grid, window=window)
     else:
-        initial = plan_cpsat(batch, time_limit=time_limit, deterministic=True, hint="serial")
+        initial = plan_cpsat(batch, time_limit=time_limit, deterministic=True, hint="serial",
+                             grid=grid, window=window)
     if not initial.finished:
         raise RuntimeError(f"initial plan failed: {initial.status} ({initial.solver_status})")
     result = execute_live(batch, initial, NoiseParams(seed, noise, delay_prob, delay_range),
                           lambda st: replan_cpsat(batch, st, time_limit=replan_time_limit,
-                                                  max_idle_hold=max_idle_hold),
-                          replan_threshold, max_idle_hold)
+                                                  max_idle_hold=max_idle_hold, grid=grid,
+                                                  window=window),
+                          replan_threshold, max_idle_hold, window)
     asrun = as_run_plan(batch, result)
     errors = validate_plan(asrun, batch, check_durations=False)
     live = _live_stats(batch, result, seed, replan_threshold, max_idle_hold)
     run = RunResult("live", asrun, result.trace, compute_stats(asrun, result.trace, batch), errors)
     session = Session(workcell, batch, [run], workcell_source, batch_source,
                       live={"seed": seed, "threshold": replan_threshold,
-                            "max_idle_hold": max_idle_hold,
+                            "max_idle_hold": max_idle_hold, "grid": grid, "window": window,
                             "replans": [asdict(e) for e in result.replans],
                             "stats": asdict(live),
                             "solve_seconds": {"initial": initial.solve_seconds,

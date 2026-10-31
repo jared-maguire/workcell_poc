@@ -78,3 +78,12 @@ def test_live_session_idle_stats(workcell_small):
     assert st.parks >= 0 and st.idle_replans >= 0 and st.idle_violations >= 0
     off = run_live(workcell_small, specs(2), seed=1, max_idle_hold=None, **FAST)
     assert off.live.parks == 0 and off.session.live["max_idle_hold"] is None
+
+
+def test_live_session_planning_settings(workcell_small):
+    ls = run_live(workcell_small, specs(2), seed=1, **FAST)
+    assert (ls.session.live["grid"], ls.session.live["window"]) == (10, 4 * 3600)
+    assert all(s % 10 == 0 for s in ls.result.plans[0].start.values())
+    exact = run_live(workcell_small, specs(2), seed=1, grid=1, window=None, **FAST)
+    assert (exact.session.live["grid"], exact.session.live["window"]) == (1, None)
+    assert ls.errors == [] and exact.errors == []

@@ -106,6 +106,8 @@
   const pct = (x, T) => (100 * x / T) + "%";
   function replanLabel(e) {
     const what = (compiledById[e.trigger] && compiledById[e.trigger].label) || e.trigger;
+    if (e.reason === "horizon") return `extended the plan at ${hms(e.time)} (planning window)`
+      + (e.adopted ? "" : ` — failed (${e.status})`);
     if (e.reason === "idle_hold") {
       const idle = `a plate would idle ${mss(e.idle_before)} past the ${mss(LIVE.max_idle_hold)} limit`;
       if (e.adopted) return `re-planned at ${hms(e.time)} — ${idle}; `
@@ -220,7 +222,8 @@
         ["re-plans", () => `${L.replans} (${L.adopted_replans} adopted / ${L.not_worth_it} not worth it / ${L.failed_replans} failed)`],
         ["reassignments", () => String(L.reassignments)],
         ["total delay", () => hms(L.total_delay)],
-        ["planned makespan", () => hms(L.planned_makespan)],
+        ["planned makespan", () => (L.planned_makespan == null ? "— (rolling window)" : hms(L.planned_makespan))],
+        ["planning", () => `grid ${LIVE.grid || 1} s · ${LIVE.window ? `window ${LIVE.window / 3600} h` : "whole batch"}`],
         ["actual makespan", () => hms(L.actual_makespan)]);
       if (L.max_idle_hold) rows.push(
         ["idle-hold limit", () => mss(L.max_idle_hold)],

@@ -65,6 +65,11 @@ def _parser() -> argparse.ArgumentParser:
     live.add_argument("--noise", type=float, default=0.05, help="relative sigma of step times (default 0.05)")
     live.add_argument("--delay-prob", type=float, default=0.02,
                       help="chance a step runs 2-5x long (default 0.02)")
+    live.add_argument("--grid", type=int, default=10, metavar="SECONDS",
+                      help="plan in units of this many seconds (default 10; 1 = exact)")
+    live.add_argument("--window-hours", type=float, default=4, metavar="H",
+                      help="plan this many hours ahead, extending as the run goes "
+                           "(default 4; 0 = plan the whole batch at once)")
     live.add_argument("--max-idle-hold", type=int, default=300, metavar="SECONDS",
                       help="longest an instrument may sit idle holding a plate; longer waits park "
                            "the plate in a hotel or storage (default 300; 0 disables)")
@@ -108,10 +113,14 @@ def _live(args) -> int:
                   delay_prob=args.delay_prob, replan_threshold=args.replan_threshold,
                   replan_time_limit=args.replan_time_limit, time_limit=args.time_limit,
                   workcell_source=Path(args.workcell).read_text(), batch_source=source,
-                  max_idle_hold=args.max_idle_hold)
+                  max_idle_hold=args.max_idle_hold, grid=args.grid,
+                  window=round(args.window_hours * 3600) or None)
     L, s = ls.live, ls.session.runs[0].stats
     print(f"seed: {L.seed}")
-    print(f"planned makespan: {_hms(L.planned_makespan)}")
+    live = ls.session.live
+    print(f"planning: grid {live['grid']}s, "
+          + (f"window {live['window'] / 3600:g} h" if live["window"] else "whole batch"))
+    print(f"planned makespan: {_hms(L.planned_makespan) if L.planned_makespan is not None else '— (rolling window)'}")
     print(f"actual makespan:  {_hms(L.actual_makespan)}")
     print(f"re-plans: {L.replans} ({L.adopted_replans} adopted, {L.not_worth_it} not worth it, "
           f"{L.failed_replans} failed)")
