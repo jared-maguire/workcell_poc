@@ -13,8 +13,8 @@ When = Literal["end", "start"]
 def plan_preds(plan: Plan, batch: CompiledBatch) -> dict[str, list[tuple[str, When]]]:
     """Each planned block's (pred, when) pairs: it may start once `pred` has ended ("end") or
     started ("start"). "end": deps in the plan and the previous block on each of its
-    instruments and plates. "start": for a move into a capacity-1 nest, the block that removes
-    the nest's previous occupant."""
+    instruments and plates. "start": for a placement into a nest, the block that frees the
+    slot it takes (see `_nest_handoffs`), unless that block already waits on this one."""
     order = sorted(plan.start, key=lambda b: (plan.start[b], b))
     preds: dict[str, dict[tuple[str, When], None]] = {b: {} for b in order}
     last: dict[str, str] = {}                       # resource -> latest block using it
@@ -28,14 +28,29 @@ def plan_preds(plan: Plan, batch: CompiledBatch) -> dict[str, list[tuple[str, Wh
                 preds[bid][(last[res], "end")] = None
             last[res] = bid
     for placer, remover in _nest_handoffs(plan, batch):
-        if remover != placer:
+        if remover != placer and not _depends_on(plan, preds, remover, placer):
             preds[placer].setdefault((remover, "start"), None)
     return {b: list(p) for b, p in preds.items()}
 
 
+def _depends_on(plan: Plan, preds: dict[str, dict[tuple[str, When], None]],
+                src: str, target: str) -> bool:
+    """Whether `src` already (transitively) waits on `target`. Preds never start later than
+    their block, so only blocks starting no earlier than `target` are searched."""
+    floor, stack, seen = plan.start[target], [src], {src}
+    while stack:
+        for p, _ in preds[stack.pop()]:
+            if p == target:
+                return True
+            if p not in seen and plan.start[p] >= floor:
+                seen.add(p)
+                stack.append(p)
+    return False
+
+
 def _nest_handoffs(plan: Plan, batch: CompiledBatch) -> list[tuple[str, str]]:
-    """(placer, remover) for each placement into a capacity-1 nest that had a previous
-    (non-initial) occupant: `remover` takes that occupant out."""
+    """(placer, remover) handoffs: in each nest of capacity c, the block placing the k-th stay
+    (planned arrival order, initial occupants first) waits for the remover of the (k-c)-th."""
     initial = batch.initial_locations()
     movers: dict[str, list[tuple[int, str, str]]] = {}   # same order plate_stays uses
     for bid in plan.start:
@@ -45,7 +60,7 @@ def _nest_handoffs(plan: Plan, batch: CompiledBatch) -> list[tuple[str, str]]:
         chain.sort()
     # plate_stays emits each plate's stays in order: stay i is placed by movers[i - 1] (or is
     # initial when the plate has an initial location) and removed by movers[i].
-    by_nest: dict[str, list[tuple[int, str | None, str | None]]] = {}
+    by_nest: dict[str, list[tuple[int, str, str | None, str | None]]] = {}
     seen: dict[str, int] = {}
     for plate, nest, arrive, leave in plate_stays(plan, initial):
         i = seen.get(plate, 0)
@@ -54,15 +69,16 @@ def _nest_handoffs(plan: Plan, batch: CompiledBatch) -> list[tuple[str, str]]:
         chain = movers.get(plate, [])
         placer = chain[k - 1][1] if k >= 1 else None
         remover = chain[k][1] if leave is not None else None
-        by_nest.setdefault(nest, []).append((arrive, placer, remover))
+        by_nest.setdefault(nest, []).append((arrive, placer or "", plate, remover))
     nests = batch.workcell.nests()
     out = []
     for nest in sorted(by_nest):
-        if nest not in nests or nests[nest].capacity != 1:
+        if nest not in nests:
             continue
-        stays = sorted(by_nest[nest], key=lambda s: (s[0], s[1] or ""))
-        for (_, prev_placer, remover), (_, placer, _) in zip(stays, stays[1:]):
-            if placer is not None and prev_placer is not None and remover is not None:
+        cap = nests[nest].capacity
+        stays = sorted(by_nest[nest], key=lambda s: (s[1] != "", s[0], s[1], s[2]))
+        for (_, _, _, remover), (_, placer, _, _) in zip(stays, stays[cap:]):
+            if placer and remover is not None:
                 out.append((placer, remover))
     return out
 
@@ -72,6 +88,7 @@ def project(plan: Plan, preds: dict[str, list[tuple[str, When]]], actual_start: 
     """Projected start of every unstarted planned block, keeping the plan's order. Started
     blocks keep their actual start; they end at their actual end, or (still running) no
     earlier than now or their planned duration after their actual start."""
+    assert set(actual_end) <= set(actual_start), "a finished block must have started"
     start: dict[str, int] = {}
     end: dict[str, int] = {}
     for bid in plan.start:
