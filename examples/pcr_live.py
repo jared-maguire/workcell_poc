@@ -3,7 +3,7 @@ from workcell.dsl import Workflow, workflow
 from workcell.library import PCR_PROGRAM
 
 TIMES = {"arm.move": 10, "open_door": 5, "close_door": 5, "scan": 4,
-         "retrieve": 20, "store": 20, "check_status": 0}
+         "retrieve": 60, "store": 60, "check_status": 0}
 
 
 @workflow(times=TIMES)

@@ -11,8 +11,8 @@ def test_timed_pcr_block_durations(workcell_small):
     specs, _ = load_batch(EXAMPLES / "pcr_live.py")
     b = compile_batch(workcell_small, specs[:1])
     d = {blk.id: blk.duration for blk in b.workflows[0].blocks}
-    assert d["pcr_live-0/00"] == 30                                      # fetch: retrieve 20 + move 10
-    assert [d[f"pcr_live-0/{i:02d}"] for i in (1, 2, 6, 11, 12, 15, 13)] == [4, 10, 60, 20, 4020, 40, 30]
+    assert d["pcr_live-0/00"] == 70                                      # fetch: retrieve 60 + move 10
+    assert [d[f"pcr_live-0/{i:02d}"] for i in (1, 2, 6, 11, 12, 15, 13)] == [4, 10, 60, 20, 4020, 80, 70]
 
 
 def test_untimed_workflow_unchanged(compiled_small):
