@@ -119,9 +119,17 @@ def workflow(func: Callable) -> Callable[..., WorkflowSpec]:
     return build
 
 
+class BatchFileError(ValueError):
+    """A batch file that is missing or does not define `batch()`."""
+
+
 def load_batch(path: str | Path) -> tuple[list[WorkflowSpec], str]:
     path = Path(path)
+    if not path.is_file():
+        raise BatchFileError(f"batch file not found: {path}")
     spec = importlib.util.spec_from_file_location(f"_batch_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if not callable(getattr(module, "batch", None)):
+        raise BatchFileError(f"{path} does not define a batch() function")
     return list(module.batch()), path.read_text()

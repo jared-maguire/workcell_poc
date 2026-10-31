@@ -11,6 +11,11 @@ INSTRUMENT_TYPES = frozenset(
 )
 
 
+UNLIMITED_HOTEL_SLOTS = 10**9      # a hotel without `slots`: capacity is a v1 non-goal
+
+_FAILURE_KEYS = frozenset({"op", "kind", "instrument", "plate"})
+
+
 class ConfigError(ValueError):
     pass
 
@@ -56,7 +61,10 @@ class Workcell:
         out: dict[str, Nest] = {}
         for inst in self.instruments.values():
             if inst.type in ("storage", "hotel"):
-                out[inst.id] = Nest(inst.id, inst.id, inst.slots or 1)
+                slots = inst.slots
+                if slots is None:
+                    slots = UNLIMITED_HOTEL_SLOTS if inst.type == "hotel" else 1
+                out[inst.id] = Nest(inst.id, inst.id, slots)
             elif inst.type == "head_stamper":
                 for suffix in ("src", "dst"):
                     nid = f"{inst.id}.{suffix}"
@@ -78,14 +86,42 @@ class Workcell:
         return 1
 
 
+def _require(raw, keys: tuple[str, ...], what: str):
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{what}: expected a mapping, got {raw!r}")
+    for k in keys:
+        if k not in raw:
+            raise ConfigError(f"{what}: missing {k!r} in {raw!r}")
+    return [raw[k] for k in keys]
+
+
+def _failure(raw, what: str) -> FailureSpec:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{what}: expected a mapping, got {raw!r}")
+    raw = dict(raw)
+    if "instruction" in raw:                     # spec §4 spelling
+        if "op" in raw:
+            raise ConfigError(f"{what}: give either 'op' or 'instruction', not both: {raw!r}")
+        raw["op"] = raw.pop("instruction")
+    unknown = sorted(set(raw) - _FAILURE_KEYS)
+    if unknown:
+        raise ConfigError(f"{what}: unknown key(s) {', '.join(unknown)} in {raw!r}")
+    _require(raw, ("op",), what)
+    return FailureSpec(**raw)
+
+
 def parse_workcell(data: dict) -> Workcell:
+    if not isinstance(data, dict):
+        raise ConfigError(f"workcell config must be a mapping, got {type(data).__name__}")
     instruments: dict[str, Instrument] = {}
-    for raw in data.get("instruments", []):
-        iid, itype = raw.get("id"), raw.get("type")
+    for n, raw in enumerate(data.get("instruments") or []):
+        iid, itype = _require(raw, ("id", "type"), f"instrument entry {n}")
         if itype not in INSTRUMENT_TYPES:
             raise ConfigError(f"unknown instrument type {itype!r} for {iid!r}")
         if iid in instruments:
             raise ConfigError(f"duplicate instrument id {iid!r}")
+        if itype == "storage" and raw.get("slots") is None:
+            raise ConfigError(f"storage {iid!r} needs 'slots'")
         instruments[iid] = Instrument(iid, itype, raw.get("slots"))
 
     plates: dict[str, Plate] = {}
@@ -100,18 +136,28 @@ def parse_workcell(data: dict) -> Workcell:
             raise ConfigError(f"duplicate plate barcode {plate.barcode!r}")
         plates[plate.barcode] = plate
 
-    for raw in data.get("plates", []):
-        if "generate" in raw:
-            for i in range(1, raw["count"] + 1):
-                add_plate(Plate(f"{raw['prefix']}{i:04d}", raw["generate"], raw["location"],
+    for n, raw in enumerate(data.get("plates") or []):
+        what = f"plate entry {n}"
+        if isinstance(raw, dict) and "generate" in raw:
+            count, prefix, location = _require(raw, ("count", "prefix", "location"), what)
+            for i in range(1, count + 1):
+                add_plate(Plate(f"{prefix}{i:04d}", raw["generate"], location,
                                 raw.get("contents", "")))
         else:
-            add_plate(Plate(raw["barcode"], raw["type"], raw["location"], raw.get("contents", "")))
+            barcode, ptype, location = _require(raw, ("barcode", "type", "location"), what)
+            add_plate(Plate(barcode, ptype, location, raw.get("contents", "")))
 
     durations = dict(data.get("durations") or {"default": 1})
-    failures = [FailureSpec(**f) for f in data.get("failures", [])]
+    failures = [_failure(f, f"failure entry {n}") for n, f in enumerate(data.get("failures") or [])]
     return Workcell(instruments, plates, durations, failures)
 
 
 def load_workcell(path: str | Path) -> Workcell:
-    return parse_workcell(yaml.safe_load(Path(path).read_text()))
+    path = Path(path)
+    if not path.is_file():
+        raise ConfigError(f"workcell file not found: {path}")
+    try:
+        data = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path}: malformed YAML: {e}") from None
+    return parse_workcell(data)

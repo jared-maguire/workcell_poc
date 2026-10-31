@@ -8,6 +8,8 @@ import yaml
 
 from workcell.compiler import CompileError
 from workcell.config import ConfigError, parse_workcell
+from workcell.dsl import BatchFileError
+from workcell.planners import MODES
 from workcell.report import write_report
 from workcell.run import run_files, run_session
 from workcell.scenarios import scale_specs, scale_workcell_dict
@@ -22,8 +24,9 @@ def _parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="plan, simulate and report a batch")
     run.add_argument("workcell", help="workcell YAML file")
     run.add_argument("batch", help="Python file defining batch()")
-    run.add_argument("--mode", action="append", dest="modes", metavar="M",
-                     help=f"planner mode, repeatable (default: {' '.join(DEFAULT_MODES)})")
+    run.add_argument("--mode", action="append", dest="modes", metavar="M", choices=MODES,
+                     help=f"planner mode, repeatable (default: {' '.join(DEFAULT_MODES)}; "
+                          f"valid: {', '.join(MODES)})")
     run.add_argument("--time-limit", type=float, default=30, metavar="S",
                      help="CP-SAT time limit in seconds (default 30)")
     run.add_argument("--out", default="out/report.html", help="report path (default out/report.html)")
@@ -33,8 +36,9 @@ def _parser() -> argparse.ArgumentParser:
     scale.add_argument("--thermocyclers", type=int, default=16)
     scale.add_argument("--scanners", type=int, default=2)
     scale.add_argument("--primers", type=int, default=8)
-    scale.add_argument("--mode", action="append", dest="modes", metavar="M",
-                       help=f"planner mode, repeatable (default: {' '.join(DEFAULT_MODES)})")
+    scale.add_argument("--mode", action="append", dest="modes", metavar="M", choices=MODES,
+                       help=f"planner mode, repeatable (default: {' '.join(DEFAULT_MODES)}; "
+                            f"valid: {', '.join(MODES)})")
     scale.add_argument("--time-limit", type=float, default=60, metavar="S",
                        help="CP-SAT time limit in seconds (default 60)")
     scale.add_argument("--out", default="out/scale.html", help="report path (default out/scale.html)")
@@ -74,7 +78,7 @@ def main(argv=None) -> int:
             session = _scale_session(args, argv)
         else:
             session = run_files(args.workcell, args.batch, args.modes or DEFAULT_MODES, args.time_limit)
-    except (ConfigError, CompileError) as e:
+    except (ConfigError, CompileError, BatchFileError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     _print_session(session, args.out)

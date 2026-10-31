@@ -57,3 +57,11 @@ def test_run_files(tmp_path):
     sess = run_files(wc_path, batch_path, ["greedy:fifo"], time_limit=5)
     assert sess.runs[0].stats.completed == 1 and "def batch" in sess.batch_source
     assert "instruments" in sess.workcell_source
+
+
+def test_run_session_rejects_unknown_mode_first(workcell_small, pcr_specs, monkeypatch):
+    import pytest
+    import workcell.run as run
+    monkeypatch.setattr(run, "compile_batch", lambda *a: pytest.fail("compiled before mode check"))
+    with pytest.raises(ValueError, match="bogus.*greedy_hotel"):
+        run_session(workcell_small, pcr_specs(1), ["greedy", "bogus"], time_limit=1)

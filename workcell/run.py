@@ -9,7 +9,7 @@ from workcell.config import Workcell, load_workcell
 from workcell.dsl import load_batch
 from workcell.ir import CompiledBatch
 from workcell.plan import Plan
-from workcell.planners import make_plan
+from workcell.planners import MODES, make_plan
 from workcell.sim.executor import Trace, execute
 from workcell.stats import Stats, compute_stats
 from workcell.validate import validate_plan
@@ -35,6 +35,9 @@ class Session:
 
 def run_session(workcell: Workcell, specs, modes: list[str], time_limit: float,
                 workcell_source: str = "", batch_source: str = "") -> Session:
+    bad = [m for m in modes if m not in MODES]
+    if bad:       # before any compiling or solving
+        raise ValueError(f"unknown mode(s) {', '.join(bad)}; valid modes: {', '.join(MODES)}")
     batch = compile_batch(workcell, specs)
     runs = []
     for mode in modes:
