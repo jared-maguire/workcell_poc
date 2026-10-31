@@ -8,9 +8,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from workcell.idle import idle_gaps
 from workcell.ir import Block, CompiledBatch
 from workcell.live.noise import NoiseParams, actual_block
 from workcell.live.order import max_push, plan_preds, project
+from workcell.parking import plan_parks
 from workcell.plan import Plan
 from workcell.planners.cpsat import ReplanState, _var
 from workcell.sim.executor import Alarm, InstructionEvent, MoveEvent, Trace
@@ -32,6 +34,9 @@ class ReplanEvent:
     makespan_after: int | None
     adopted: bool
     reassigned: int         # bindings changed by an adopted re-plan
+    reason: str = "delay"   # "delay", or "idle_hold" (a new projected idle-hold violation)
+    idle_before: int = 0    # total projected idle-hold excess (s) if we keep sliding
+    idle_after: int | None = None
 
 
 @dataclass
@@ -41,6 +46,7 @@ class LiveResult:
     replans: list[ReplanEvent]
     actual: dict[str, list[int]] = field(default_factory=dict)
     bindings: dict[str, dict[str, str]] = field(default_factory=dict)
+    blocks: dict[str, Block] = field(default_factory=dict)   # the block run under each id
 
 
 def _vars_of(blk: Block) -> set[str]:
@@ -48,22 +54,30 @@ def _vars_of(blk: Block) -> set[str]:
     return {_var(n) for n in names} - {None}
 
 
+def _excess(gaps, limit: int | None) -> int:
+    return sum(max(0, g.length - limit) for g in gaps) if limit else 0
+
+
 def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
-                 replan: Callable[[ReplanState], Plan], threshold: int) -> LiveResult:
+                 replan: Callable[[ReplanState], Plan], threshold: int,
+                 max_idle_hold: int | None = None) -> LiveResult:
     """Run `plan` with actual durations from `noise`. A block starts once its planned start has
     passed, its plan-order predecessors allow it (see order.plan_preds) and its locks are
     free. When any block finishes, project the rest (running blocks end no earlier than now,
     so a still-running overrun shows up too); when the projected push of some unstarted block exceeds
     `threshold`, ask `replan` for a new plan and adopt it only if it finishes at least
     `threshold` sooner than sliding; otherwise keep sliding (the projection becomes the new
-    baseline, so the same delay does not trigger again)."""
+    baseline, so the same delay does not trigger again). With `max_idle_hold`, a projected
+    idle-hold violation that the baseline does not already have also triggers a re-plan,
+    adopted if it lowers the total projected excess over the limit. Park blocks inserted by
+    a plan run like any other block."""
     initial = batch.initial_locations()
     world = World(batch.workcell, initial)
     trace = Trace(initial_locations=dict(initial))
-    result = LiveResult(trace=trace, plans=[plan], replans=[], bindings=plan.bindings)
-
     compiled = {blk.id: blk for blk in batch.all_blocks()}
     blocks = dict(plan.blocks)              # bound blocks; started ones never change
+    result = LiveResult(trace=trace, plans=[plan], replans=[], bindings=plan.bindings,
+                        blocks=blocks)
     start_at = dict(plan.start)             # gate and push baseline
     preds = plan_preds(plan, batch)
     pending = sorted(plan.start, key=lambda b: (start_at[b], b))
@@ -100,34 +114,60 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
     def running_end(bid: str, t: int) -> int:
         return max(t, started[bid] + blocks[bid].duration)
 
+    def gaps(blks: dict[str, Block], starts: dict[str, int], ends: dict[str, int]):
+        return idle_gaps(blks, starts, ends, batch) if max_idle_hold else []
+
     def check_delay(trigger: str, t: int) -> None:
-        nonlocal plan, preds
+        nonlocal plan, preds, start_at
         if not pending:
             return
         base = shifted()
         actual_end = dict(ended)
         proj = project(base, preds, dict(started), actual_end, t)
         push, who = max_push(base, proj)
-        if push <= threshold:
-            return
         fixed = {bid: (s, ended[bid] if bid in ended else running_end(bid, t))
                  for bid, s in sorted(started.items())}
+        done = {b: s for b, (s, _) in fixed.items()}
+        done_end = {b: e for b, (_, e) in fixed.items()}
+        now_gaps = gaps(blocks, {**done, **proj},
+                        {**done_end, **{b: proj[b] + blocks[b].duration for b in pending}})
+        was = {(g.plate, g.prev, g.next) for g in gaps(
+            blocks, {**done, **{b: start_at[b] for b in pending}},
+            {**done_end, **{b: start_at[b] + blocks[b].duration for b in pending}})
+            if g.length > max_idle_hold}
+        new_idle = [g for g in now_gaps if g.length > max_idle_hold
+                    and (g.plate, g.prev, g.next) not in was]
+        if push <= threshold and not new_idle:
+            return
+        reason = "idle_hold" if new_idle else "delay"
         keep: dict[str, dict[str, str]] = {}
         for bid in sorted(started):
+            if bid not in compiled:             # park blocks bind nothing of their own
+                continue
             wf = compiled[bid].workflow
             for var in sorted(_vars_of(compiled[bid])):
                 keep.setdefault(wf, {})[var] = plan.bindings[wf][var]
         before = max([e for _, e in fixed.values()]
                      + [proj[b] + blocks[b].duration for b in pending])
+        idle_before = _excess(now_gaps, max_idle_hold)
+        parks = plan_parks(plan)
         state = ReplanState(now=t, fixed=fixed, bindings=keep, hint=dict(proj),
-                            hint_bindings={wf: dict(v) for wf, v in plan.bindings.items()})
+                            hint_bindings={wf: dict(v) for wf, v in plan.bindings.items()},
+                            parks={d: sp for d, sp in parks.items() if f"{d}.park" in started},
+                            hint_parks=parks)
         t0 = time.perf_counter()
         new = replan(state)
         solve = time.perf_counter() - t0
-        after = None
+        after = idle_after = None
         if new.finished:
             after = max(fixed[b][1] if b in fixed else new.end(b) for b in new.start)
-        adopt = after is not None and before - after >= threshold
+            rest = [b for b in new.start if b not in fixed]
+            idle_after = _excess(gaps(
+                {**blocks, **{b: new.blocks[b] for b in rest}},
+                {**done, **{b: new.start[b] for b in rest}},
+                {**done_end, **{b: new.end(b) for b in rest}}), max_idle_hold)
+        adopt = after is not None and (before - after >= threshold or (
+            reason == "idle_hold" and idle_after < idle_before))
         reassigned = 0
         if adopt:
             reassigned = sum(new.bindings[wf].get(v) != c
@@ -136,16 +176,19 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
             result.plans.append(new)
             result.bindings = new.bindings
             preds = plan_preds(new, batch)
+            # the new plan's unstarted blocks replace ours (park blocks may come or go)
+            pending[:] = [b for b in new.start if b not in started]
+            start_at = {**{b: start_at[b] for b in started}, **{b: new.start[b] for b in pending}}
             for bid in pending:
                 blocks[bid] = new.blocks[bid]
-                start_at[bid] = new.start[bid]
+                seq.setdefault(bid, len(seq))
         else:
             for bid in pending:                 # keep sliding: projection is the new baseline
                 start_at[bid] = proj[bid]
         pending.sort(key=lambda b: (start_at[b], b))
         # Blame the started block that has overrun the most so far — it may still be running
         # (its lateness shows up in the projection as soon as any other block finishes).
-        late, delay = max(((bid, (ended.get(bid, t) - s) - compiled[bid].duration)
+        late, delay = max(((bid, (ended.get(bid, t) - s) - blocks[bid].duration)
                            for bid, s in sorted(started.items())),
                           key=lambda x: (x[1], x[0] == trigger))
         result.replans.append(ReplanEvent(
@@ -153,7 +196,8 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
             pushed_block=who, solve_seconds=solve,
             status=new.status if (adopt or after is None) else "not_worth_it",
             makespan_before=before, makespan_after=after, adopted=adopt,
-            reassigned=reassigned))
+            reassigned=reassigned, reason=reason, idle_before=idle_before,
+            idle_after=idle_after))
 
     def finish_alarm(alarm: Alarm) -> LiveResult:
         trace.alarm = alarm

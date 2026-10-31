@@ -58,6 +58,9 @@ def _parser() -> argparse.ArgumentParser:
     live.add_argument("--noise", type=float, default=0.05, help="relative sigma of step times (default 0.05)")
     live.add_argument("--delay-prob", type=float, default=0.02,
                       help="chance a step runs 2-5x long (default 0.02)")
+    live.add_argument("--max-idle-hold", type=int, default=300, metavar="SECONDS",
+                      help="longest an instrument may sit idle holding a plate; longer waits park "
+                           "the plate in a hotel or storage (default 300; 0 disables)")
     live.add_argument("--out", default="out/live.html", help="report path (default out/live.html)")
     return p
 
@@ -97,13 +100,17 @@ def _live(args) -> int:
     ls = run_live(load_workcell(args.workcell), specs, seed=args.seed, noise=args.noise,
                   delay_prob=args.delay_prob, replan_threshold=args.replan_threshold,
                   replan_time_limit=args.replan_time_limit, time_limit=args.time_limit,
-                  workcell_source=Path(args.workcell).read_text(), batch_source=source)
+                  workcell_source=Path(args.workcell).read_text(), batch_source=source,
+                  max_idle_hold=args.max_idle_hold)
     L, s = ls.live, ls.session.runs[0].stats
     print(f"seed: {L.seed}")
     print(f"planned makespan: {_hms(L.planned_makespan)}")
     print(f"actual makespan:  {_hms(L.actual_makespan)}")
     print(f"re-plans: {L.replans} ({L.adopted_replans} adopted, {L.not_worth_it} not worth it, "
           f"{L.failed_replans} failed)")
+    if L.max_idle_hold:
+        print(f"idle hold: limit {L.max_idle_hold}s, parks {L.parks}, "
+              f"violations {L.idle_violations} (worst {L.worst_idle}s)")
     print(f"completed: {s.completed}/{s.total}")
     if ls.errors:
         print(f"as-run validation errors: {len(ls.errors)}", file=sys.stderr)

@@ -6,6 +6,7 @@ import dataclasses
 from dataclasses import asdict, dataclass
 
 from workcell.compiler import compile_batch
+from workcell.idle import idle_gaps, violations
 from workcell.config import Workcell
 from workcell.ir import CompiledBatch
 from workcell.live.executor import LiveResult, execute_live
@@ -29,6 +30,11 @@ class LiveStats:
     total_delay: int            # Σ over executed blocks of actual − planned duration
     planned_makespan: int
     actual_makespan: int
+    max_idle_hold: int | None = None
+    parks: int = 0              # park blocks run
+    idle_replans: int = 0       # re-plans triggered by a projected idle-hold violation
+    idle_violations: int = 0    # as-run idle-hold gaps over the limit
+    worst_idle: int = 0         # the longest of those gaps (s)
 
 
 @dataclass
@@ -46,7 +52,7 @@ def as_run_plan(batch: CompiledBatch, result: LiveResult) -> Plan:
     bound = bind_batch(batch, result.bindings)
     blocks = {}
     for bid, ds in result.actual.items():
-        blk = bound[bid]
+        blk = result.blocks.get(bid) or bound[bid]
         blocks[bid] = dataclasses.replace(blk, instructions=[
             dataclasses.replace(ins, duration=d) for ins, d in zip(blk.instructions, ds)])
     if trace.alarm is not None:
@@ -59,9 +65,15 @@ def as_run_plan(batch: CompiledBatch, result: LiveResult) -> Plan:
                 bindings=result.bindings, status=status)
 
 
-def _live_stats(batch: CompiledBatch, result: LiveResult, seed: int, threshold: int) -> LiveStats:
-    planned = {b.id: b.duration for b in batch.all_blocks()}
+def _live_stats(batch: CompiledBatch, result: LiveResult, seed: int, threshold: int,
+                max_idle_hold: int | None = None) -> LiveStats:
+    planned = {bid: blk.duration for bid, blk in result.blocks.items()}
     events = result.replans
+    over = []
+    if max_idle_hold:
+        spans = result.trace.spans
+        over = violations(idle_gaps(result.blocks, {b: s for b, (s, _) in spans.items()},
+                                    {b: e for b, (_, e) in spans.items()}, batch), max_idle_hold)
     return LiveStats(
         seed=seed, threshold=threshold, replans=len(events),
         adopted_replans=sum(e.adopted for e in events),
@@ -70,27 +82,35 @@ def _live_stats(batch: CompiledBatch, result: LiveResult, seed: int, threshold: 
         reassignments=sum(e.reassigned for e in events),
         total_delay=sum(sum(ds) - planned[bid] for bid, ds in result.actual.items()),
         planned_makespan=result.plans[0].makespan,
-        actual_makespan=result.trace.end_time)
+        actual_makespan=result.trace.end_time,
+        max_idle_hold=max_idle_hold or None,
+        parks=sum(b.endswith(".park") for b in result.actual),
+        idle_replans=sum(e.reason == "idle_hold" for e in events),
+        idle_violations=len(over), worst_idle=max((g.length for g in over), default=0))
 
 
 def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
              delay_prob: float = 0.02, delay_range: tuple[float, float] = (2.0, 5.0),
              replan_threshold: int = 300, replan_time_limit: float = 2.0,
              time_limit: float = 30.0, workcell_source: str = "",
-             batch_source: str = "") -> LiveSession:
+             batch_source: str = "", max_idle_hold: int | None = 300) -> LiveSession:
+    max_idle_hold = max_idle_hold or None
     batch = compile_batch(workcell, specs)
-    initial = plan_cpsat(batch, time_limit=time_limit, deterministic=True, hint="serial")
+    initial = plan_cpsat(batch, time_limit=time_limit, deterministic=True, hint="serial",
+                         max_idle_hold=max_idle_hold)
     if not initial.finished:
         raise RuntimeError(f"initial plan failed: {initial.status} ({initial.solver_status})")
     result = execute_live(batch, initial, NoiseParams(seed, noise, delay_prob, delay_range),
-                          lambda st: replan_cpsat(batch, st, time_limit=replan_time_limit),
-                          replan_threshold)
+                          lambda st: replan_cpsat(batch, st, time_limit=replan_time_limit,
+                                                  max_idle_hold=max_idle_hold),
+                          replan_threshold, max_idle_hold)
     asrun = as_run_plan(batch, result)
     errors = validate_plan(asrun, batch, check_durations=False)
-    live = _live_stats(batch, result, seed, replan_threshold)
+    live = _live_stats(batch, result, seed, replan_threshold, max_idle_hold)
     run = RunResult("live", asrun, result.trace, compute_stats(asrun, result.trace, batch), errors)
     session = Session(workcell, batch, [run], workcell_source, batch_source,
                       live={"seed": seed, "threshold": replan_threshold,
+                            "max_idle_hold": max_idle_hold,
                             "replans": [asdict(e) for e in result.replans],
                             "stats": asdict(live),
                             "solve_seconds": {"initial": initial.solve_seconds,

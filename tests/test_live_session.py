@@ -42,6 +42,7 @@ def test_validator_duration_flag(timed_batch):
     assert asrun.status == "complete" and set(asrun.start) == {blk.id for blk in b.all_blocks()}
 
 
+@pytest.mark.slow
 def test_same_seed_same_session(workcell_small):
     a = run_live(workcell_small, specs(3), seed=5, delay_prob=0.1, replan_threshold=60, **FAST)
     c = run_live(workcell_small, specs(3), seed=5, delay_prob=0.1, replan_threshold=60, **FAST)
@@ -68,3 +69,12 @@ def test_as_run_validates_after_forced_replan(timed_batch):
     assert any(e.adopted for e in r.replans) and len(r.plans) > 1
     asrun = as_run_plan(b, r)
     assert asrun.status == "complete" and validate_plan(asrun, b, check_durations=False) == []
+
+
+def test_live_session_idle_stats(workcell_small):
+    ls = run_live(workcell_small, specs(2), seed=1, max_idle_hold=300, **FAST)
+    assert ls.errors == [] and ls.session.live["max_idle_hold"] == 300
+    st = ls.live
+    assert st.parks >= 0 and st.idle_replans >= 0 and st.idle_violations >= 0
+    off = run_live(workcell_small, specs(2), seed=1, max_idle_hold=None, **FAST)
+    assert off.live.parks == 0 and off.session.live["max_idle_hold"] is None

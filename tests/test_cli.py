@@ -91,6 +91,7 @@ def test_cli_live(tmp_path):
                        capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0, r.stderr
     assert "re-plans:" in r.stdout and "completed: 10/10" in r.stdout and out.exists()
+    assert "idle hold: limit 300s" in r.stdout
 
 
 def test_cli_live_bad_file():

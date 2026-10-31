@@ -116,3 +116,45 @@ def test_overrun_attributed_while_still_running(timed_batch):
         assert r.replans and r.replans[0].trigger == "pcr_live-2/00"
         assert all(e.delay > 0 for e in r.replans)
     assert validate_plan(as_run_plan(b, r), b, check_durations=False) == []
+
+
+def test_idle_hold_park_runs(timed_batch):
+    """A plan with a park block (both thermocyclers busy) runs live as planned."""
+    from test_cpsat_idle import busy_state, solve
+    from workcell.live.session import as_run_plan
+    from workcell.validate import validate_plan
+    b = timed_batch(3)
+    p = solve(b, busy_state(b))
+    r = execute_live(b, p, QUIET, cp(b), 300, max_idle_hold=300)
+    assert r.trace.alarm is None and "pcr_live-2/11.park" in r.trace.completed
+    extra = r.trace.completed - all_ids(b)
+    assert r.trace.completed >= all_ids(b) and all(x.endswith(".park") for x in extra)
+    assert r.replans == []
+    assert r.blocks["pcr_live-2/11"].moves[0].src == "hotel1"
+    assert validate_plan(as_run_plan(b, r), b, check_durations=False) == []
+
+
+def test_adopted_replan_swaps_park_blocks(timed_batch):
+    """An adopted plan without the park: the stale park block never runs."""
+    from test_cpsat_idle import busy_state, solve
+    b = timed_batch(3)
+    p = solve(b, busy_state(b))
+    noparks = lambda st: replan_cpsat(b, st, time_limit=0.3)
+    with patch("workcell.live.executor.actual_block", overrun("pcr_live-0/00", 900)):
+        r = execute_live(b, p, QUIET, noparks, 0, max_idle_hold=300)
+    assert r.replans and r.replans[0].adopted
+    assert "pcr_live-2/11.park" not in r.trace.completed
+    assert r.trace.alarm is None and r.trace.completed == all_ids(b)
+
+
+def test_long_mid_use_wait_triggers_idle_replan(timed_batch):
+    """The primer fetch overruns by 600 s while the stamped plate waits on stamp1.dst for its
+    second stamp: a new projected idle-hold violation triggers an "idle_hold" re-plan."""
+    b = timed_batch(3)
+    lim = lambda st: replan_cpsat(b, st, time_limit=0.3, max_idle_hold=300)
+    p = plan_cpsat(b, time_limit=0.5, deterministic=True, hint="serial", max_idle_hold=300)
+    with patch("workcell.live.executor.actual_block", overrun("pcr_live-0/07", 600)):
+        r = execute_live(b, p, QUIET, lim, 300, max_idle_hold=300)
+    ev = [e for e in r.replans if e.reason == "idle_hold"]
+    assert ev and ev[0].idle_before > 0 and ev[0].trigger == "pcr_live-0/07"
+    assert r.trace.alarm is None and r.trace.completed >= all_ids(b)
