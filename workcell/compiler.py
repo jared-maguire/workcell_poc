@@ -1,13 +1,19 @@
 """Compiler: workflow specs -> per-workflow DAGs of synchronized blocks (spec §6)."""
 from __future__ import annotations
 
-from workcell.config import Workcell
+from workcell.config import TWO_POSITION_TYPES, Workcell
 from workcell.dsl import Op, WorkflowSpec
 from workcell.ir import Block, CompiledBatch, CompiledWorkflow, Instruction, PlateMove
 
 
 class CompileError(ValueError):
     pass
+
+
+# instrument variable prefixes for `step` instruments (`?lh`, `?hs0`, `?seal0`, ...)
+_PREFIX = {"liquid_handler": "lh", "heated_shaker": "hs", "plate_sealer": "seal",
+           "plate_peeler": "peel", "centrifuge": "spin", "plate_reader": "read",
+           "vacuum_concentrator": "dry", "thermocycler": "tc", "head_stamper": "stamp"}
 
 
 def _arm(workcell: Workcell) -> str:
@@ -138,6 +144,7 @@ class _WorkflowCompiler:
         self.home = {pid: workcell.plates[bc].location for pid, bc in barcodes.items()}
         self.loc = dict(self.home)
         self.stamper: str | None = None
+        self.two_pos: dict[str, str] = {}
 
     # -- instruments -------------------------------------------------------
     def _instrument(self, itype: str, var: str) -> str:
@@ -149,6 +156,17 @@ class _WorkflowCompiler:
         self.variables[var] = list(candidates)
         self.var_types[var] = itype
         return var
+
+    def _two_position(self, itype: str) -> str:
+        """One instrument variable per workflow per two-position type (a workflow keeps its
+        plates on one stamper / liquid handler)."""
+        if itype == "head_stamper":
+            if self.stamper is None:
+                self.stamper = self._instrument("head_stamper", "?stamp")
+            return self.stamper
+        if itype not in self.two_pos:
+            self.two_pos[itype] = self._instrument(itype, f"?{_PREFIX[itype]}")
+        return self.two_pos[itype]
 
     def _numbered(self, itype: str, prefix: str) -> str:
         k = self.counters.get(prefix, 0)
@@ -222,6 +240,17 @@ class _WorkflowCompiler:
                 instr = self._ins(inst, "stamp", {"src": src, "dst": dst},
                                   own=op.params.get("seconds"))
                 label = f"stamp {src} → {dst}"
+            elif op.kind == "step":
+                itype, bcs = op.params["itype"], [self.barcodes[p] for p in op.plates]
+                if itype in TWO_POSITION_TYPES:
+                    inst = self._two_position(itype)
+                    nests = [f"{inst}.src", f"{inst}.dst"][-len(op.plates):]
+                else:
+                    inst = self._numbered(itype, _PREFIX.get(itype, itype))
+                    nests = [inst]
+                instr = self._ins(inst, op.params["op"], {"plates": bcs},
+                                  own=op.params["seconds"])
+                label = f"{op.params['op']} {' '.join(bcs)}"
             elif op.kind == "thermocycle":
                 inst = self._numbered("thermocycler", "tc")
                 nests = [inst]
