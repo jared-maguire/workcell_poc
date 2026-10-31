@@ -628,6 +628,8 @@ def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2
     m1.hint_bindings(state.hint_bindings)
     m1.hint_parks(state.hint_parks)
     first, sol1 = _solve_plan(m1, time_limit, True, "makespan", t0)
+    if first.status == "no_solution":       # rounded warm start needs repair: one more try
+        first, sol1 = _solve_plan(m1, 4 * time_limit, True, "makespan", t0)
     if not first.finished:
         return first
     m2 = _Model(batch, state, max_idle_hold, soft=True, grid=grid, window=window)
