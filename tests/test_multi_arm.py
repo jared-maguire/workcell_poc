@@ -64,3 +64,26 @@ def test_two_arm_live_runs(two_arm):
 def test_parking_spots_nearest_first(two_arm):
     assert parking_spots(two_arm, near="tc2") == ["hotel2", "hotel1", "store1"]
     assert parking_spots(two_arm, near="stamp1.dst") == ["hotel1", "store1", "hotel2"]
+
+
+def test_replan_after_tech_park_of_variant_removal(two_arm):
+    """The executor parked a plate whose removal's route depends on a binding (no CP-SAT park
+    option): the re-plan takes the running park and rewritten removal as given."""
+    from workcell.parking import park_pair, plan_parks
+    b = compile_batch(two_arm, specs(2))
+    p = plan(b)
+    d = "pcr_live-0/15"
+    assert b.block(d).variants
+    tc = p.bindings["pcr_live-0"]["?tc0"]
+    spot = parking_spots(two_arm, near=tc)[0]
+    park, moved = park_pair(b, p.blocks[d], spot)
+    fixed = {k: (p.start[k], p.end(k)) for k in p.start if p.start[k] < p.start[d]}
+    t = max(e for _, e in fixed.values())
+    fixed[park.id] = (t, t + park.duration)
+    keep = {wf: dict(v) for wf, v in p.bindings.items()}
+    st = ReplanState(now=t + park.duration, fixed=fixed, bindings=keep, hint=dict(p.start),
+                     hint_bindings=keep, parks={d: spot}, blocks={d: moved, park.id: park})
+    new = replan_cpsat(b, st, time_limit=1, max_idle_hold=300)
+    assert new.finished and validate_plan(new, b) == []
+    assert plan_parks(new) == {d: spot} and new.blocks[d].moves[0].src == spot
+    assert new.start[park.id] == t

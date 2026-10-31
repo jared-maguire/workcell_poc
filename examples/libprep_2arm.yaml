@@ -1,0 +1,45 @@
+# Two-arm workcell for the library prep + hybrid capture demo. Each arm reaches its own
+# instruments; the arms only share the handoff spot ho1. Zone 1 (arm1) is library prep,
+# zone 2 (arm2) is capture. Single instruments (sealer, peeler, centrifuge) are not
+# duplicated: plates cross over when they need them. Plate readers are one per zone.
+instruments:
+  - id: arm1
+    type: arm
+    reach: [store1, hotel1, scan1, stamp1, tc1, tc2, lh1, hs1, seal1, peel1, read1, ho1]
+  - id: arm2
+    type: arm
+    reach: [hotel2, dry1, lh2, hs2, tc3, tc4, spin1, read2, ho1]
+  - {id: ho1, type: handoff, slots: 2}           # shared by arm1 and arm2
+  # zone 1: library prep
+  - {id: store1, type: storage, slots: 2000}
+  - {id: hotel1, type: hotel, slots: 20}
+  - {id: scan1, type: barcode_scanner}
+  - {id: stamp1, type: head_stamper}
+  - {id: tc1, type: thermocycler}
+  - {id: tc2, type: thermocycler}
+  - {id: lh1, type: liquid_handler}
+  - {id: hs1, type: heated_shaker}
+  - {id: seal1, type: plate_sealer}
+  - {id: peel1, type: plate_peeler}
+  - {id: read1, type: plate_reader}
+  # zone 2: capture
+  - {id: hotel2, type: hotel, slots: 20}
+  - {id: dry1, type: vacuum_concentrator}
+  - {id: lh2, type: liquid_handler}
+  - {id: hs2, type: heated_shaker}
+  - {id: tc3, type: thermocycler}
+  - {id: tc4, type: thermocycler}
+  - {id: spin1, type: centrifuge}
+  - {id: read2, type: plate_reader}
+
+durations:
+  default: 1
+  check_status: 0
+
+plates:
+  - {generate: gdna, prefix: G, count: 3, location: store1}
+  - {generate: tagmentation_mix, prefix: TAG, count: 3, location: store1}
+  - {generate: stop_buffer, prefix: STP, count: 3, location: store1}
+  - {generate: pcr_master_mix, prefix: PCR, count: 3, location: store1}
+  - {generate: index_adapters, prefix: IDX, count: 3, location: store1}
+  - {generate: empty, prefix: E, count: 12, location: store1}

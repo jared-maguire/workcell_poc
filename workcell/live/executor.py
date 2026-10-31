@@ -192,8 +192,14 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         if push <= threshold and not new_idle:
             return
         reason = "idle_hold" if new_idle else "delay"
+        # started park blocks and their rewritten removals are given to the re-plan as is,
+        # with the removal's instrument choices kept
+        given = {}
+        for k in sorted(b for b in started if b not in compiled and b.endswith(".park")):
+            given[k] = blocks[k]
+            given[k[:-len(".park")]] = blocks[k[:-len(".park")]]
         keep: dict[str, dict[str, str]] = {}
-        for bid in sorted(started):
+        for bid in sorted(set(started) | set(given)):
             if bid not in compiled:             # park blocks bind nothing of their own
                 continue
             wf = compiled[bid].workflow
@@ -206,7 +212,7 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         state = ReplanState(now=t, fixed=fixed, bindings=keep, hint=dict(proj),
                             hint_bindings={wf: dict(v) for wf, v in plan.bindings.items()},
                             parks={d: sp for d, sp in parks.items() if f"{d}.park" in started},
-                            hint_parks=parks)
+                            hint_parks=parks, blocks=given)
         t0 = time.perf_counter()
         new = replan(state)
         solve = time.perf_counter() - t0

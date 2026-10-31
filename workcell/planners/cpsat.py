@@ -13,7 +13,7 @@ from typing import Literal
 from ortools.sat.python import cp_model
 
 from workcell.idle import hold_chains
-from workcell.ir import CompiledBatch, resolve
+from workcell.ir import Block, CompiledBatch, resolve
 from workcell.compiler import AmbiguousRoute
 from workcell.parking import (park_durations, park_pair, park_pair_instructions,
                               parking_spots, plan_parks)
@@ -49,6 +49,8 @@ class ReplanState:
     # and the current plan's decisions (hints and churn)
     parks: dict[str, str | None] = field(default_factory=dict)
     hint_parks: dict[str, str | None] = field(default_factory=dict)
+    # bound blocks to take as given: started park blocks and their rewritten removals
+    blocks: dict[str, Block] = field(default_factory=dict)
 
 
 def _movers(wc, instructions) -> set[str]:
@@ -96,14 +98,15 @@ class _Model:
         blocks = batch.all_blocks()
         fixed = state.fixed if state else {}
         self.state, self.limit, self.soft = state, max_idle_hold or None, soft
+        self.over = dict(state.blocks) if state else {}
         # idle hold: one stay per chain; its removal may be parked at any spot
         self.chains = hold_chains(batch) if self.limit else []
         self.removals = {c.blocks[-1]: c for c in self.chains}
         self.spots = parking_spots(batch.workcell) if self.limit else []
         self.pdur = {}
         for d in sorted(self.removals):
-            if batch.block(d).variants:
-                continue            # route depends on a binding: no park option (spec)
+            if batch.block(d).variants or d in self.over:
+                continue            # route depends on a binding (spec), or already parked
             try:
                 for sp in self.spots:
                     self.pdur[d, sp] = park_durations(batch, batch.block(d), sp)
@@ -113,7 +116,8 @@ class _Model:
         extra = sum(max((a + b for (dd, _), (a, b) in self.pdur.items() if dd == d), default=0)
                     for d in self.removals)
         # interval size per block: actual (end - start) for fixed blocks, else planned duration
-        self.size = {b.id: fixed[b.id][1] - fixed[b.id][0] if b.id in fixed else b.duration
+        self.size = {b.id: fixed[b.id][1] - fixed[b.id][0] if b.id in fixed
+                     else self.over[b.id].duration if b.id in self.over else b.duration
                      for b in blocks}
         if state is None:
             horizon = sum(_longest(b) for b in blocks) + extra
@@ -149,7 +153,7 @@ class _Model:
         the chosen variant's duration (actual size when fixed)."""
         self.vlits: dict[str, dict[tuple, object]] = {}
         for b in self.batch.all_blocks():
-            if not b.variants:
+            if not b.variants or b.id in self.over:
                 continue
             lits = {}
             for key in b.variants:
@@ -186,6 +190,10 @@ class _Model:
         self.kstart, self.ksize, self.kend = {}, {}, {}
         for d in sorted(self.removals):
             k = f"{d}.park"
+            if d in self.over and k in fixed:       # parked already: it left at the park start
+                self.park[d], self.leave[d] = {}, m.NewConstant(fixed[k][0])
+                m.Add(self.start[d] >= fixed[k][1])
+                continue
             lits = {sp: m.NewBoolVar(f"park[{d},{sp}]") for sp in self.spots
                     if (d, sp) in self.pdur}
             parked = m.NewBoolVar(f"parked[{d}]")
@@ -229,7 +237,7 @@ class _Model:
         self.gaps, self.excess, self.park_delay = [], [], []
         for c in self.chains:
             d = c.blocks[-1]
-            if self.spots:                  # a parked plate should leave right away
+            if self.park.get(d):            # a parked plate should leave right away
                 pd = self.m.NewIntVar(0, 2 * self.horizon, f"park_delay[{d}]")
                 self.m.Add(pd >= self.leave[d] - self.end[c.blocks[-2]]).OnlyEnforceIf(
                     self.parked[d])
@@ -271,7 +279,17 @@ class _Model:
         """NoOverlap per concrete instrument and per plate over the blocks that lock them."""
         wc = self.batch.workcell
         groups = defaultdict(list)
+        for bid, blk in sorted(self.over.items()):  # given blocks: their own instruments
+            if bid not in self.start:               # a started park block (not compiled)
+                s, e = self.state.fixed[bid]
+                for name in sorted(blk.instruments | blk.plates):
+                    groups[name].append(self.m.NewIntervalVar(s, e - s, e, f"{bid}@{name}"))
         for b in self.batch.all_blocks():
+            if b.id in self.over:
+                for name in sorted(self.over[b.id].instruments | b.plates):
+                    groups[name].append(self._interval(
+                        self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{name}"))
+                continue
             if b.id in self.vlits:          # route variants: each variant's own instruments
                 for key, lit in sorted(self.vlits[b.id].items()):
                     for name in sorted({i.instrument for i in b.variants[key]}):
@@ -405,6 +423,8 @@ class _Model:
             if state.hint_bindings.get(wf, {}).get(var) == cand:
                 terms.append(weight * (1 - lit))
         for d, lits in sorted(self.park.items()):
+            if d in self.over:
+                continue
             want = state.hint_parks.get(d)
             terms.append(weight * (self.parked[d] if want is None else 1 - lits[want]))
         for bid, h in sorted(state.hint.items()):
@@ -563,6 +583,10 @@ def _solve_plan(model: _Model, time_limit: float, deterministic: bool, objective
             bindings[wf][var] = cand
     blocks = bind_batch(batch, bindings)
     start = {bid: sol.values[s.Index()] for bid, s in model.start.items()}
+    for bid, blk in model.over.items():         # given blocks (started parks, rewritten moves)
+        blocks[bid] = blk
+        if bid not in start:
+            start[bid] = model.state.fixed[bid][0]
     for d, lits in sorted(model.park.items()):
         spot = next((sp for sp, lit in lits.items() if sol.values[lit.Index()]), None)
         if spot is not None:
