@@ -1,0 +1,238 @@
+"""Compiler: workflow specs -> per-workflow DAGs of synchronized blocks (spec §6)."""
+from __future__ import annotations
+
+from workcell.config import Workcell
+from workcell.dsl import Op, WorkflowSpec
+from workcell.ir import Block, CompiledBatch, CompiledWorkflow, Instruction, PlateMove
+
+
+class CompileError(ValueError):
+    pass
+
+
+def _arm(workcell: Workcell) -> str:
+    arms = workcell.of_type("arm")
+    if len(arms) != 1:
+        raise CompileError(f"exactly one arm is supported, found {len(arms)}")
+    return arms[0]
+
+
+def _type_of(workcell: Workcell, instrument: str, var_types: dict[str, str] | None) -> str:
+    if instrument.startswith("?"):
+        if var_types is None or instrument not in var_types:
+            raise CompileError(f"no instrument type known for variable {instrument!r}")
+        return var_types[instrument]
+    return workcell.instruments[instrument].type
+
+
+def transport_instructions(workcell: Workcell, plate: str, src: str, dst: str,
+                           var_types: dict[str, str] | None = None) -> list[Instruction]:
+    """Instructions that move `plate` from nest `src` to nest `dst` with the arm."""
+    arm = _arm(workcell)
+    src_owner, dst_owner = workcell.nest_owner(src), workcell.nest_owner(dst)
+    types = {name: _type_of(workcell, name, var_types) for name in (src_owner, arm, dst_owner)}
+
+    def ins(instrument: str, op: str, args: dict | None = None) -> Instruction:
+        return Instruction(instrument, op, args or {}, workcell.duration(types[instrument], op))
+
+    out = [ins(name, "check_status") for name in dict.fromkeys((src_owner, arm, dst_owner))]
+    if types[src_owner] == "storage":
+        out.append(ins(src_owner, "retrieve", {"plate": plate}))
+    doors = [n for n in dict.fromkeys((src_owner, dst_owner)) if types[n] == "thermocycler"]
+    out += [ins(n, "open_door") for n in doors]
+    out.append(ins(arm, "move", {"plate": plate, "src": src, "dst": dst}))
+    out += [ins(n, "close_door") for n in doors]
+    if types[dst_owner] == "storage":
+        out.append(ins(dst_owner, "store", {"plate": plate}))
+    return out
+
+
+def _resolve_plates(workcell: Workcell, specs: list[WorkflowSpec],
+                    wf_ids: list[str]) -> list[dict[str, str]]:
+    """Map each workflow's plate handles to barcodes, validating explicit use and
+    allocating `new_plate` pools in batch order."""
+    users: dict[str, list[tuple[str, str]]] = {}   # barcode -> [(wf_id, mode)]
+    for spec, wf_id in zip(specs, wf_ids):
+        seen: set[str] = set()
+        for decl in spec.plates.values():
+            if decl.barcode is None:
+                continue
+            if decl.barcode not in workcell.plates:
+                raise CompileError(f"unknown plate barcode {decl.barcode!r} (workflow {wf_id})")
+            if decl.barcode in seen:
+                raise CompileError(f"plate {decl.barcode} is used twice in workflow {wf_id}")
+            seen.add(decl.barcode)
+            users.setdefault(decl.barcode, []).append((wf_id, decl.mode))
+    for barcode, uses in users.items():
+        for owner, mode in uses:
+            if mode == "own":
+                other = next((w for w, _ in uses if w != owner), None)
+                if other is not None:
+                    raise CompileError(f"plate {barcode} owned by {owner} is also used by {other}")
+
+    taken = set(users)
+    result: list[dict[str, str]] = []
+    for spec, wf_id in zip(specs, wf_ids):
+        barcodes: dict[str, str] = {}
+        for decl in spec.plates.values():
+            if decl.barcode is not None:
+                barcodes[decl.id] = decl.barcode
+                continue
+            bc = next((p.barcode for p in workcell.plates.values()
+                       if p.type == decl.pool and p.barcode not in taken), None)
+            if bc is None:
+                raise CompileError(
+                    f"no unused plates of type {decl.pool!r} left (needed by {wf_id})")
+            taken.add(bc)
+            barcodes[decl.id] = bc
+        result.append(barcodes)
+    return result
+
+
+def _op_order(spec: WorkflowSpec, wf_id: str) -> tuple[list[Op], dict[str, list[str]]]:
+    """Topologically sort ops (stable by program order); return order and op deps."""
+    deps: dict[str, list[str]] = {}
+    last_on_plate: dict[str, str] = {}
+    for op in spec.ops:
+        d = list(op.after)
+        for pid in op.plates:
+            if pid in last_on_plate:
+                d.append(last_on_plate[pid])
+            last_on_plate[pid] = op.id
+        deps[op.id] = list(dict.fromkeys(d))
+    order: list[Op] = []
+    done: set[str] = set()
+    pending = list(spec.ops)
+    while pending:
+        ready = next((op for op in pending if all(d in done for d in deps[op.id])), None)
+        if ready is None:
+            raise CompileError(f"cycle in op dependencies of workflow {wf_id}")
+        pending.remove(ready)
+        done.add(ready.id)
+        order.append(ready)
+    return order, deps
+
+
+class _WorkflowCompiler:
+    def __init__(self, workcell: Workcell, spec: WorkflowSpec, wf_id: str,
+                 barcodes: dict[str, str]):
+        self.wc, self.spec, self.wf_id, self.barcodes = workcell, spec, wf_id, barcodes
+        self.blocks: list[Block] = []
+        self.variables: dict[str, list[str]] = {}
+        self.var_types: dict[str, str] = {}
+        self.counters: dict[str, int] = {}
+        self.home = {pid: workcell.plates[bc].location for pid, bc in barcodes.items()}
+        self.loc = dict(self.home)
+        self.stamper: str | None = None
+
+    # -- instruments -------------------------------------------------------
+    def _instrument(self, itype: str, var: str) -> str:
+        candidates = self.wc.of_type(itype)
+        if not candidates:
+            raise CompileError(f"no {itype} instrument available (needed by {self.wf_id})")
+        if len(candidates) == 1:
+            return candidates[0]
+        self.variables[var] = list(candidates)
+        self.var_types[var] = itype
+        return var
+
+    def _numbered(self, itype: str, prefix: str) -> str:
+        k = self.counters.get(prefix, 0)
+        self.counters[prefix] = k + 1
+        return self._instrument(itype, f"?{prefix}{k}")
+
+    def _ins(self, instrument: str, op: str, args: dict | None = None) -> Instruction:
+        itype = _type_of(self.wc, instrument, self.var_types)
+        return Instruction(instrument, op, args or {}, self.wc.duration(itype, op))
+
+    # -- emission ----------------------------------------------------------
+    def _emit(self, kind, label, instructions, moves, plates, deps) -> str:
+        bid = f"{self.wf_id}/{len(self.blocks):02d}"
+        self.blocks.append(Block(bid, self.wf_id, kind, label, instructions, moves,
+                                 set(plates), list(dict.fromkeys(deps))))
+        return bid
+
+    def _transport(self, kind, pid: str, dst: str, deps: list[str]) -> str:
+        bc, src = self.barcodes[pid], self.loc[pid]
+        instrs = transport_instructions(self.wc, bc, src, dst, self.var_types)
+        self.loc[pid] = dst
+        return self._emit(kind, f"{kind} {bc} {src} → {dst}", instrs,
+                          [PlateMove(bc, src, dst)], {bc}, deps)
+
+    def _route(self, pid: str, dst: str, deps: list[str]) -> str | None:
+        """Bring plate `pid` to nest `dst`; return the chain's last block id (None if no move)."""
+        if self.loc[pid] == dst:
+            return None
+        owner = self.wc.nest_owner(self.loc[pid])
+        if _type_of(self.wc, owner, self.var_types) != "storage":
+            return self._transport("move", pid, dst, deps)
+        bc = self.barcodes[pid]
+        scanner = self._numbered("barcode_scanner", "scan")
+        fetch = self._transport("fetch", pid, scanner, deps)
+        scan = self._emit("scan", f"scan {bc}",
+                          [self._ins(scanner, "check_status"),
+                           self._ins(scanner, "scan", {"expect": bc})],
+                          [], {bc}, [fetch])
+        return self._transport("move", pid, dst, [scan])
+
+    def compile(self) -> CompiledWorkflow:
+        order, op_deps = _op_order(self.spec, self.wf_id)
+        op_end: dict[str, list[str]] = {}   # op id -> the block ids that finish it
+        last_op: dict[str, str] = {}
+        stored: set[str] = set()
+
+        def ends(op_ids) -> list[str]:
+            return [b for o in op_ids for b in op_end[o]]
+
+        for op in order:
+            deps = ends(op_deps[op.id])
+            for pid in op.plates:
+                last_op[pid] = op.id
+            if op.kind == "store":
+                (pid,) = op.plates
+                stored.add(pid)
+                if self.loc[pid] == self.home[pid]:
+                    op_end[op.id] = deps
+                else:
+                    op_end[op.id] = [self._transport("return", pid, self.home[pid], deps)]
+                continue
+            if op.kind == "stamp":
+                if self.stamper is None:
+                    self.stamper = self._instrument("head_stamper", "?stamp")
+                inst = self.stamper
+                nests = [f"{inst}.src", f"{inst}.dst"]
+                src, dst = (self.barcodes[p] for p in op.plates)
+                instr = self._ins(inst, "stamp", {"src": src, "dst": dst})
+                label = f"stamp {src} → {dst}"
+            elif op.kind == "thermocycle":
+                inst = self._numbered("thermocycler", "tc")
+                nests = [inst]
+                bc = self.barcodes[op.plates[0]]
+                instr = self._ins(inst, "run_program",
+                                  {"plate": bc, "program": op.params["program"]})
+                label = f"thermocycle {bc}"
+            else:
+                raise CompileError(f"unknown op kind {op.kind!r} in {self.wf_id}")
+            chain_ends = [self._route(pid, nest, deps) for pid, nest in zip(op.plates, nests)]
+            op_end[op.id] = [self._emit(
+                "op", label, [self._ins(inst, "check_status"), instr], [],
+                {self.barcodes[p] for p in op.plates},
+                [e for e in chain_ends if e is not None] + deps)]
+
+        for pid in self.spec.plates:
+            if pid not in stored and self.loc[pid] != self.home[pid]:
+                self._transport("return", pid, self.home[pid], ends([last_op[pid]]))
+
+        owned = {self.barcodes[d.id] for d in self.spec.plates.values() if d.mode == "own"}
+        borrowed = {self.barcodes[d.id] for d in self.spec.plates.values() if d.mode == "borrow"}
+        return CompiledWorkflow(self.wf_id, self.spec.name, dict(self.spec.args), self.blocks,
+                                self.variables, owned, borrowed, dict(self.barcodes))
+
+
+def compile_batch(workcell: Workcell, specs: list[WorkflowSpec]) -> CompiledBatch:
+    _arm(workcell)
+    wf_ids = [f"{spec.name}-{i}" for i, spec in enumerate(specs)]
+    all_barcodes = _resolve_plates(workcell, specs, wf_ids)
+    workflows = [_WorkflowCompiler(workcell, spec, wf_id, barcodes).compile()
+                 for spec, wf_id, barcodes in zip(specs, wf_ids, all_barcodes)]
+    return CompiledBatch(workcell, workflows, list(specs))

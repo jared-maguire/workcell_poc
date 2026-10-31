@@ -24,3 +24,21 @@ SMALL = {
 @pytest.fixture
 def workcell_small():
     return parse_workcell(SMALL)
+
+
+@pytest.fixture
+def pcr_specs():
+    from workcell.library import pcr
+
+    def make(n):
+        return [pcr(sample=f"S{i+1:04d}", primer=f"P{i % 2 + 1:04d}") for i in range(n)]
+    return make
+
+
+@pytest.fixture
+def compiled_small(workcell_small, pcr_specs):
+    from workcell.compiler import compile_batch
+
+    def make(n):
+        return compile_batch(workcell_small, pcr_specs(n))
+    return make
