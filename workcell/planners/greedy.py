@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import itertools
 from collections import Counter
+from dataclasses import replace
 from typing import Literal
 
-from workcell.ir import Block, CompiledBatch, CompiledWorkflow
+from workcell.compiler import transport_instructions
+from workcell.ir import Block, CompiledBatch, CompiledWorkflow, PlateMove
 from workcell.plan import Deadlock, Plan, Wait
 
 Priority = Literal["round_robin", "fifo"]
@@ -18,7 +20,10 @@ class _Greedy:
         self.batch, self.priority, self.park = batch, priority, park
         self.workflows = batch.workflows
         self.wf_index = {wf.id: i for i, wf in enumerate(self.workflows)}
-        self.capacity = {n: nest.capacity for n, nest in batch.workcell.nests().items()}
+        nests = batch.workcell.nests()
+        self.capacity = {n: nest.capacity for n, nest in nests.items()}
+        self.siblings = {n: [o for o in nests if o != n and nest.instrument == nests[o].instrument]
+                         for n, nest in nests.items()}     # other nests of the same instrument
         self.location = batch.initial_locations()          # plate -> nest (reserved at move start)
         self.placed_by: dict[str, str] = {}                # plate -> workflow that last moved it
         self.bindings: dict[str, dict[str, str]] = {wf.id: {} for wf in self.workflows}
@@ -30,6 +35,7 @@ class _Greedy:
         self.start: dict[str, int] = {}
         self.running: dict[str, int] = {}                  # block id -> end time
         self.done: set[str] = set()
+        self.rewritten: dict[str, Block] = {}              # parked block id -> unbound rewrite
         self.last_wf: int | None = None                    # index of the most recent starter
 
     # -- state queries -----------------------------------------------------
@@ -55,7 +61,12 @@ class _Greedy:
             order = range(n)
         else:
             order = [(self.last_wf + 1 + k) % n for k in range(n)]
-        return [b for i in order for b in self.workflows[i].blocks if ready(b)]
+        return [b for i in order for b in map(self._current, self.workflows[i].blocks)
+                if ready(b)]
+
+    def _current(self, blk: Block) -> Block:
+        """The planner's version of a compiled block (its rewrite, if it was parked)."""
+        return self.rewritten.get(blk.id, blk)
 
     # -- startability ------------------------------------------------------
     def _blockers(self, blk: Block) -> list[str]:
@@ -76,24 +87,46 @@ class _Greedy:
                 reason = f"nest {m.dst} full ({held})"
                 if reason not in reasons:
                     reasons.append(reason)
+        if self.park:
+            reasons += self._reserved(blk)
         for p in sorted(blk.plates):
             holder = self.borrow_holder.get(p)
             if p in self.borrowers and holder not in (None, blk.workflow):
                 reasons.append(f"plate {p} borrowed by {holder}")
         return reasons
 
-    def _try_bind(self, blk: Block) -> tuple[Block | None, dict[str, str], list[str]]:
-        """Bind `blk`'s still-unbound vars to the first candidates that make it startable.
-        Returns (bound block or None, new bindings, blocking reasons)."""
+    def _reserved(self, blk: Block) -> list[str]:
+        """greedy_hotel: a multi-nest working instrument (head stamper) serves one workflow at
+        a time, so a move into one of its nests waits while another workflow's plate sits in a
+        sibling nest. This avoids two workflows each holding half the stamper (hold-and-wait)."""
+        wc, reasons = self.batch.workcell, []
+        for m in blk.moves:
+            if wc.instruments[wc.nest_owner(m.dst)].type in ("storage", "hotel"):
+                continue
+            for sib in self.siblings[m.dst]:
+                held = [p for p in self._occupants(sib) if self.placed_by.get(p) != blk.workflow]
+                if held:
+                    reasons.append(f"nest {m.dst} reserved ({sib} holds "
+                                   f"{', '.join(self._describe(p) for p in held)})")
+        return reasons
+
+    def _choices(self, blk: Block):
+        """Yield each binding of `blk`'s still-unbound vars (new vars only) in candidate order."""
         wf: CompiledWorkflow = self.workflows[self.wf_index[blk.workflow]]
         bound = self.bindings[blk.workflow]
         names = [i.instrument for i in blk.instructions] + [n for m in blk.moves
                                                             for n in (m.src, m.dst)]
         unbound = list(dict.fromkeys(n.partition(".")[0] for n in names
                                      if n.startswith("?") and n.partition(".")[0] not in bound))
-        first_reasons: list[str] | None = None
         for choice in itertools.product(*(wf.variables[v] for v in unbound)):
-            new = dict(zip(unbound, choice))
+            yield dict(zip(unbound, choice))
+
+    def _try_bind(self, blk: Block) -> tuple[Block | None, dict[str, str], list[str]]:
+        """Bind `blk`'s still-unbound vars to the first candidates that make it startable.
+        Returns (bound block or None, new bindings, blocking reasons)."""
+        bound = self.bindings[blk.workflow]
+        first_reasons: list[str] | None = None
+        for new in self._choices(blk):
             concrete = blk.bind({**bound, **new})
             reasons = self._blockers(concrete)
             if not reasons:
@@ -124,30 +157,65 @@ class _Greedy:
             if self.borrow_spans.get((blk.workflow, p), (None, None))[1] == bid:
                 del self.borrow_holder[p]
 
-    def _park_hook(self, blk: Block, reasons: list[str], t: int) -> bool:
-        """Task 8 (greedy_hotel): when self.park is set and a move block's only blocker is a
-        full destination nest, insert a "park" block here and return True. Inactive for now."""
-        return False
+    def _park_hook(self, blk: Block, t: int) -> bool:
+        """greedy_hotel: when a move block is blocked only by its destination nest (full, or
+        reserved) under every binding choice, and its plate sits on a working instrument, park
+        the plate in the first hotel with room and rewrite the move to start from that hotel.
+        Each block is parked at most once. Returns True if a park block was started."""
+        if blk.kind != "move" or blk.id in self.rewritten:
+            return False
+        (move,) = blk.moves
+        bound = self.bindings[blk.workflow]
+        for new in self._choices(blk):
+            concrete = blk.bind({**bound, **new})
+            dst = concrete.moves[0].dst
+            reasons = self._blockers(concrete)
+            if not reasons or not all(r.startswith(f"nest {dst} ") for r in reasons):
+                return False
+        wc = self.batch.workcell
+        cur = self.location[move.plate]
+        if wc.instruments[wc.nest_owner(cur)].type in ("storage", "hotel"):
+            return False
+        hotel = next((h for h in wc.of_type("hotel")
+                      if len(self._occupants(h)) < self.capacity[h]), None)
+        if hotel is None:
+            return False
+        park = Block(id=f"{blk.id}.park", workflow=blk.workflow, kind="park",
+                     label=f"park {move.plate} → {hotel}",
+                     instructions=transport_instructions(wc, move.plate, cur, hotel),
+                     moves=[PlateMove(move.plate, cur, hotel)], plates={move.plate},
+                     deps=[], inserted=True)
+        if self._blockers(park):       # arm, current owner, hotel, or plate not free
+            return False
+        wf = self.workflows[self.wf_index[blk.workflow]]
+        var_types = {v: wc.instruments[cands[0]].type for v, cands in wf.variables.items()}
+        self.rewritten[blk.id] = replace(
+            blk, label=f"unpark {move.plate} {hotel} → {move.dst}",
+            instructions=transport_instructions(wc, move.plate, hotel, move.dst, var_types),
+            moves=[PlateMove(move.plate, hotel, move.dst)], plates=set(blk.plates),
+            deps=[*blk.deps, park.id])
+        self._start(park, {}, t)
+        return True
 
     def _start_one(self, t: int) -> bool:
         for cand in self._ready():
-            concrete, new, reasons = self._try_bind(cand)
+            concrete, new, _ = self._try_bind(cand)
             if concrete is not None:
                 self._start(concrete, new, t)
                 return True
-            if self.park and self._park_hook(cand, reasons, t):
+            if self.park and self._park_hook(cand, t):
                 return True
         return False
 
     def run(self, mode: str) -> Plan:
         t = 0
-        total = len(self.batch.all_blocks())
+        compiled = [b.id for b in self.batch.all_blocks()]
         while True:
             for bid in [b for b, end in self.running.items() if end == t]:
                 self._finish(bid)
             while self._start_one(t):
                 pass
-            if len(self.done) == total:
+            if all(bid in self.done for bid in compiled):
                 return self._plan(mode, "complete")
             if not self.running:
                 waits = [Wait(b.id, "; ".join(self._try_bind(b)[2])) for b in self._ready()]

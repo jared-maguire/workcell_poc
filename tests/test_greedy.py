@@ -1,5 +1,9 @@
 import pytest
 
+from conftest import SMALL
+from workcell.compiler import compile_batch
+from workcell.config import parse_workcell
+from workcell.library import pcr
 from workcell.planners import make_plan
 from workcell.planners.greedy import plan_greedy
 from workcell.sim.executor import execute
@@ -35,3 +39,29 @@ def test_make_plan_modes(compiled_small):
     assert make_plan(b, "greedy:fifo").mode == "greedy:fifo"
     with pytest.raises(ValueError, match="greedy_hotel"):
         make_plan(b, "bogus")
+
+
+def test_hotel_breaks_deadlock(compiled_small):
+    b = compiled_small(2); p = plan_greedy(b, park=True)
+    assert p.status == "complete" and p.mode == "greedy_hotel:round_robin"
+    parks = [blk for blk in p.blocks.values() if blk.inserted]
+    assert parks and all(blk.kind == "park" and blk.moves[0].dst == "hotel1" for blk in parks)
+    assert validate_plan(p, b) == []
+    t = execute(p, b); assert t.alarm is None and t.lock_waits == []
+
+
+def test_hotel_completes_ten(compiled_small):
+    b = compiled_small(10); p = make_plan(b, "greedy_hotel")
+    assert p.status == "complete" and validate_plan(p, b) == []
+    assert execute(p, b).alarm is None
+
+
+def test_thermocycler_binding_spreads():
+    # Rulings R3/R6(b): long thermocycling keeps tc1 busy when pcr-1 binds.
+    b = compile_batch(
+        parse_workcell({**SMALL, "durations": {"default": 1, "check_status": 0,
+                                               "thermocycler.run_program": 30}}),
+        [pcr(sample="S0001", primer="P0001"), pcr(sample="S0002", primer="P0002")])
+    p = plan_greedy(b, park=True)
+    assert {p.bindings["pcr-0"]["?tc0"], p.bindings["pcr-1"]["?tc0"]} == {"tc1", "tc2"}
+    assert validate_plan(p, b) == []
