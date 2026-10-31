@@ -158,3 +158,28 @@ def test_long_mid_use_wait_triggers_idle_replan(timed_batch):
     ev = [e for e in r.replans if e.reason == "idle_hold"]
     assert ev and ev[0].idle_before > 0 and ev[0].trigger == "pcr_live-0/07"
     assert r.trace.alarm is None and r.trace.completed >= all_ids(b)
+
+
+def test_waiting_plate_parked_at_deadline():
+    """One thermocycler; its first run overruns by 2000 s while the other workflow's stamped
+    plate waits on stamp1.dst for it. Like a lab tech, the executor moves the plate to the
+    hotel before it has waited the limit, without a re-plan storm."""
+    from test_cpsat_idle import batch_on, without
+    from workcell.idle import idle_gaps
+    from workcell.live.session import as_run_plan
+    from workcell.planners.cpsat import plan_idle_hold
+    from workcell.validate import validate_plan
+    b = batch_on(without("tc2"), 2)
+    p = plan_idle_hold(b, time_limit=1, max_idle_hold=300)
+    first = min((k for k in p.start if k.endswith("/12")), key=lambda k: (p.start[k], k))
+    lim = lambda st: replan_cpsat(b, st, time_limit=0.5, max_idle_hold=300)
+    with patch("workcell.live.executor.actual_block", overrun(first, 2000)):
+        r = execute_live(b, p, QUIET, lim, 300, max_idle_hold=300)
+    assert r.trace.alarm is None and r.trace.completed >= all_ids(b)
+    assert len(r.replans) <= 3
+    sp = r.trace.spans
+    gaps = idle_gaps(r.blocks, {k: s for k, (s, _) in sp.items()},
+                     {k: e for k, (_, e) in sp.items()}, b)
+    assert max(g.length for g in gaps if g.nest == "stamp1.dst") <= 300
+    assert any(k.endswith("/11.park") for k in r.trace.completed)
+    assert validate_plan(as_run_plan(b, r), b, check_durations=False) == []

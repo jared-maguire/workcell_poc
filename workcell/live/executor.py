@@ -8,11 +8,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from workcell.idle import idle_gaps
+from workcell.idle import hold_chains, idle_gaps
 from workcell.ir import Block, CompiledBatch
 from workcell.live.noise import NoiseParams, actual_block
 from workcell.live.order import max_push, plan_preds, project
-from workcell.parking import plan_parks
+from workcell.parking import park_pair, parking_spots, plan_parks
 from workcell.plan import Plan
 from workcell.planners.cpsat import ReplanState, _var
 from workcell.sim.executor import Alarm, InstructionEvent, MoveEvent, Trace
@@ -70,7 +70,9 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
     baseline, so the same delay does not trigger again). With `max_idle_hold`, a projected
     idle-hold violation that the baseline does not already have also triggers a re-plan,
     adopted if it lowers the total projected excess over the limit. Park blocks inserted by
-    a plan run like any other block."""
+    a plan run like any other block. And like a lab tech, if a plate has waited in an
+    instrument so long that it must leave now to stay within the limit, and its next move has
+    not started, it is parked at once (see `tech_parks`)."""
     initial = batch.initial_locations()
     world = World(batch.workcell, initial)
     trace = Trace(initial_locations=dict(initial))
@@ -113,6 +115,45 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
 
     def running_end(bid: str, t: int) -> int:
         return max(t, started[bid] + blocks[bid].duration)
+
+    removals = {c.blocks[-1] for c in hold_chains(batch)} if max_idle_hold else set()
+    spot = (parking_spots(batch.workcell) or [None])[0]
+
+    def waiting(t: int) -> list[tuple[int, str]]:
+        """(deadline, removal) for each pending, unparked removal whose plate sits in its
+        nest, idle: the plate must start leaving by the deadline to stay within the limit."""
+        out = []
+        for d in pending:
+            if d not in removals or f"{d}.park" in blocks or blocks[d].moves[0].src == spot:
+                continue
+            (mv,) = blocks[d].moves
+            if mv.plate in busy or world.location(mv.plate) != mv.src:
+                continue
+            last = max((ended[b] for b in ended if mv.plate in blocks[b].plates), default=None)
+            if last is not None:
+                park, _ = park_pair(batch, blocks[d], spot)
+                out.append((last + max_idle_hold - park.duration, d))
+        return sorted(out)
+
+    def tech_parks(t: int) -> bool:
+        """Park every waiting plate whose deadline has come: insert `<removal>.park` (nest ->
+        hotel, starting now, after only its own deps) and start the removal from the hotel."""
+        nonlocal plan, preds
+        due = [d for deadline, d in waiting(t) if deadline <= t] if spot else []
+        for d in due:
+            park, moved = park_pair(batch, blocks[d], spot)
+            blocks[d], blocks[park.id] = moved, park
+            start_at[park.id] = t
+            seq.setdefault(park.id, len(seq))
+            pending.append(park.id)
+        if due:
+            plan = dataclasses.replace(
+                plan, blocks={**plan.blocks, **{b: blocks[b] for b in pending}}, start=start_at)
+            preds = plan_preds(plan, batch)
+            for d in due:               # the park only waits for its own deps
+                preds[f"{d}.park"] = [(x, "end") for x in blocks[f"{d}.park"].deps]
+            pending.sort(key=lambda b: (start_at[b], b))
+        return bool(due)
 
     def gaps(blks: dict[str, Block], starts: dict[str, int], ends: dict[str, int]):
         return idle_gaps(blks, starts, ends, batch) if max_idle_hold else []
@@ -215,6 +256,8 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         candidates += [start_at[b] for b in pending if start_at[b] > now]
         if not candidates:
             break
+        if removals:
+            candidates += [dl for dl, _ in waiting(now) if dl > now]
         t = now = min(candidates)
         while True:
             while heap and heap[0][0] == t and heap[0][1] == _RELEASE:
@@ -225,6 +268,8 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
                 trace.spans[bid] = (started[bid], t)
                 check_delay(bid, t)
             try_starts(t)
+            if removals and tech_parks(t):
+                try_starts(t)
             if not (heap and heap[0][0] == t):
                 break
             if heap[0][1] == _RELEASE:
