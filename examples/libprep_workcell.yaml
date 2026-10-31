@@ -1,0 +1,34 @@
+# Workcell for the library prep + hybrid capture demo (three 96-sample batches in parallel).
+# Timed workflows set their own step times; these durations are fallbacks only.
+instruments:
+  - {id: arm1, type: arm}
+  - {id: store1, type: storage, slots: 2000}
+  - {id: hotel1, type: hotel, slots: 30}         # deck positions for parking plates
+  - {id: scan1, type: barcode_scanner}
+  - {id: stamp1, type: head_stamper}             # 96-head reagent additions
+  - {id: lh1, type: liquid_handler}              # 8-channel pipettor with on-deck magnet
+  - {id: lh2, type: liquid_handler}
+  - {id: tc1, type: thermocycler}
+  - {id: tc2, type: thermocycler}
+  - {id: tc3, type: thermocycler}
+  - {id: hs1, type: heated_shaker}               # thermomixer
+  - {id: hs2, type: heated_shaker}
+  - {id: seal1, type: plate_sealer}
+  - {id: peel1, type: plate_peeler}
+  - {id: spin1, type: centrifuge}
+  - {id: read1, type: plate_reader}              # fluorometric quantification
+  - {id: dry1, type: vacuum_concentrator}        # dries capture pools before hybridization
+
+durations:
+  default: 1
+  check_status: 0
+
+# Per batch b: gDNA plate G000b, reagent plates TAG/STP/PCR/IDX000b; empties for LIB, CLN,
+# CAP and SEQ plates.
+plates:
+  - {generate: gdna, prefix: G, count: 3, location: store1}
+  - {generate: tagmentation_mix, prefix: TAG, count: 3, location: store1}
+  - {generate: stop_buffer, prefix: STP, count: 3, location: store1}
+  - {generate: pcr_master_mix, prefix: PCR, count: 3, location: store1}
+  - {generate: index_adapters, prefix: IDX, count: 3, location: store1}
+  - {generate: empty, prefix: E, count: 12, location: store1}

@@ -72,3 +72,20 @@ def test_step_requires_seconds():
         w.step("heated_shaker", "shake", w.own("S0001"))
     with pytest.raises(TypeError):
         f()
+
+
+def test_consecutive_same_type_steps_stay_put():
+    """Two shaker steps in a row on one plate use the same shaker: no move between them."""
+    wc = parse_workcell({**SMALL, "instruments": SMALL["instruments"] + [
+        {"id": "hs1", "type": "heated_shaker"}, {"id": "hs2", "type": "heated_shaker"}]})
+
+    @workflow(times=TIMES)
+    def f(w):
+        p = w.own("S0001")
+        w.step("heated_shaker", "capture", p, seconds=2700)
+        w.step("heated_shaker", "heated_wash", p, seconds=600)
+    wf = compile_batch(wc, [f()]).workflows[0]
+    labels = [blk.label for blk in wf.blocks]
+    i = labels.index("capture S0001")
+    assert labels[i + 1] == "heated_wash S0001"
+    assert wf.blocks[i].instructions[1].instrument == wf.blocks[i + 1].instructions[1].instrument

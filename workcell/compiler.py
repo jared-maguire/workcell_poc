@@ -246,7 +246,11 @@ class _WorkflowCompiler:
                     inst = self._two_position(itype)
                     nests = [f"{inst}.src", f"{inst}.dst"][-len(op.plates):]
                 else:
-                    inst = self._numbered(itype, _PREFIX.get(itype, itype))
+                    here = self.loc[op.plates[0]]
+                    if _type_of(self.wc, self.wc.nest_owner(here), self.var_types) == itype:
+                        inst = here         # already on one: stay (no move to itself)
+                    else:
+                        inst = self._numbered(itype, _PREFIX.get(itype, itype))
                     nests = [inst]
                 instr = self._ins(inst, op.params["op"], {"plates": bcs},
                                   own=op.params["seconds"])
