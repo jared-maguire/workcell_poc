@@ -1,9 +1,13 @@
 """CP-SAT planner (spec §7): an exact model of the batch with direct transports only."""
 from __future__ import annotations
 
+import atexit
+import os
 import pickle
+import selectors
 import subprocess
 import sys
+import tempfile
 import time
 import warnings
 from collections import defaultdict
@@ -725,50 +729,135 @@ def _child_timeout(time_limit: float) -> float:
     return max(300.0, 60 * time_limit)
 
 
-def _child_main() -> None:
-    """Child process entry: read (model, parameters) in text format as a pickle on stdin,
-    solve, write the pickled `_Solution` to stdout."""
-    model_text, params_text = pickle.load(sys.stdin.buffer)
-    m = cp_model.CpModel()
-    m.Proto().parse_text_format(model_text)
-    solver = cp_model.CpSolver()
-    solver.parameters.parse_text_format(params_text)
-    pickle.dump(_run(m, solver), sys.stdout.buffer)
+def _worker_main() -> None:
+    """Solver process entry: serve requests until stdin closes. Each request and reply is an
+    8-byte big-endian length then a pickle: (model, parameters) in text format -> `_Solution`.
+    Stray prints go to stderr so they can't corrupt the reply stream."""
+    inp = sys.stdin.buffer
+    out = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
+    while True:
+        head = inp.read(8)
+        if len(head) < 8:
+            return
+        model_text, params_text = pickle.loads(inp.read(int.from_bytes(head, "big")))
+        m = cp_model.CpModel()
+        m.Proto().parse_text_format(model_text)
+        solver = cp_model.CpSolver()
+        solver.parameters.parse_text_format(params_text)
+        data = pickle.dumps(_run(m, solver))
+        out.write(len(data).to_bytes(8, "big") + data)
+        out.flush()
 
 
-# the child command; a test seam (replaced to inject child crashes)
+# the solver process command; a test seam (replaced to inject crashes)
 _CHILD_CMD = [sys.executable, "-c",
-              "from workcell.planners.cpsat import _child_main; _child_main()"]
+              "from workcell.planners.cpsat import _worker_main; _worker_main()"]
+
+
+class _Dead(Exception):
+    def __init__(self, code: int):
+        self.code = code
+
+
+class _Worker:
+    """A long-lived solver process (ruling R7: an OR-Tools abort kills it, not us)."""
+
+    def __init__(self, cmd: list[str]):
+        self.cmd = list(cmd)
+        self.err = tempfile.TemporaryFile()
+        self.proc = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=self.err)
+
+    def stderr_tail(self) -> str:
+        self.err.seek(0)
+        return self.err.read().decode(errors="replace")[-2000:]
+
+    def kill(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
+
+    def ask(self, request: bytes, timeout: float) -> bytes:
+        """Send one request and read its reply; TimeoutError, or _Dead(exit code)."""
+        try:
+            self.proc.stdin.write(len(request).to_bytes(8, "big") + request)
+            self.proc.stdin.flush()
+        except BrokenPipeError:
+            raise _Dead(self.proc.wait()) from None
+        deadline = time.monotonic() + timeout
+        head = self._read(8, deadline)
+        return self._read(int.from_bytes(head, "big"), deadline)
+
+    def _read(self, n: int, deadline: float) -> bytes:
+        fd, buf = self.proc.stdout.fileno(), bytearray()
+        with selectors.DefaultSelector() as sel:
+            sel.register(fd, selectors.EVENT_READ)
+            while len(buf) < n:
+                left = deadline - time.monotonic()
+                if left <= 0 or not sel.select(left):
+                    raise TimeoutError
+                chunk = os.read(fd, min(n - len(buf), 1 << 20))
+                if not chunk:
+                    raise _Dead(self.proc.wait())
+                buf += chunk
+        return bytes(buf)
+
+
+_WORKER: _Worker | None = None
+
+
+def _worker() -> _Worker:
+    global _WORKER
+    if _WORKER is None or _WORKER.proc.poll() is not None or _WORKER.cmd != _CHILD_CMD:
+        if _WORKER is not None:
+            _WORKER.kill()
+        _WORKER = _Worker(_CHILD_CMD)
+    return _WORKER
+
+
+def _drop_worker() -> None:
+    global _WORKER
+    if _WORKER is not None:
+        _WORKER.kill()
+        _WORKER = None
+
+
+atexit.register(_drop_worker)
 
 
 def _solve_isolated(model_text: str, params_text: str, timeout: float) -> _Solution:
-    """Solve in a child process. A child killed by a signal (the OR-Tools abort), hung past
-    `timeout`, or returning an unreadable result is retried (deterministic, so the same
-    answer), up to `_ATTEMPTS` times in all, then given up with status "CRASHED". A child
-    exiting with an error code failed in Python, deterministically: raise RuntimeError. If
-    every attempt timed out, raise too: a load-dependent "no solution" would make the same
-    inputs give different live runs."""
+    """Solve in the solver process. A process killed by a signal (the OR-Tools abort), hung
+    past `timeout`, or returning an unreadable result is restarted and the solve retried
+    (deterministic, so the same answer), up to `_ATTEMPTS` times in all, then given up with
+    status "CRASHED". A process exiting with an error code failed in Python,
+    deterministically: raise RuntimeError. If every attempt timed out, raise too: a
+    load-dependent "no solution" would make the same inputs give different live runs."""
     request = pickle.dumps((model_text, params_text))
     why = ""
     timeouts = 0
     for _ in range(_ATTEMPTS):
+        w = _worker()
         try:
-            child = subprocess.run(_CHILD_CMD, input=request, capture_output=True,
-                                   timeout=timeout)
-        except subprocess.TimeoutExpired:
+            reply = w.ask(request, timeout)
+        except TimeoutError:
             why = f"timed out after {timeout:g} s"
             timeouts += 1
+            _drop_worker()
             continue
-        err = child.stderr.decode(errors="replace")[-2000:]
-        if child.returncode > 0:
-            raise RuntimeError(f"CP-SAT child exited {child.returncode}:\n{err}")
-        if child.returncode < 0:
-            why = f"killed by signal {-child.returncode}:\n{err}"
+        except _Dead as dead:
+            err = w.stderr_tail()
+            _drop_worker()
+            if dead.code > 0:
+                raise RuntimeError(f"CP-SAT child exited {dead.code}:\n{err}") from None
+            why = (f"killed by signal {-dead.code}:\n{err}" if dead.code < 0
+                   else f"exited before replying:\n{err}")
             continue
         try:
-            return pickle.loads(child.stdout)
+            return pickle.loads(reply)
         except Exception as e:      # noqa: BLE001 — any unreadable result is a failed attempt
-            why = f"unreadable result ({e!r}):\n{err}"
+            why = f"unreadable result ({e!r}):\n{w.stderr_tail()}"
+            _drop_worker()
     if timeouts == _ATTEMPTS:
         raise RuntimeError(f"CP-SAT child timed out {_ATTEMPTS} times ({why}); "
                            "the machine may be overloaded")

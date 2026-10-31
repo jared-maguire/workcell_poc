@@ -33,12 +33,21 @@ done = len(list(crashes.iterdir()))
 if done < int(os.environ["CRASH_TIMES"]):
     (crashes / str(done)).touch()
     {failure}
-from workcell.planners.cpsat import _child_main
-_child_main()
+from workcell.planners.cpsat import _worker_main
+_worker_main()
 """
 _ABORT = "resource.setrlimit(resource.RLIMIT_CORE, (0, 0)); sys.stderr.write('heap!'); sys.stderr.flush(); os.abort()"
 _EXIT_1 = "sys.stderr.write('ImportError: no module named nonsense'); sys.exit(1)"
 _HANG = "time.sleep(60)"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_worker():
+    """Each test starts and ends without a solver process (a leftover one started with the
+    same failing command would skip the injected crashes)."""
+    cpsat._drop_worker()
+    yield
+    cpsat._drop_worker()
 
 
 def _crash(monkeypatch, tmp_path, times, failure=_ABORT):
@@ -129,3 +138,12 @@ def test_all_attempts_timing_out_is_an_error(timed_batch, monkeypatch, tmp_path)
 
 def test_child_timeout_is_generous():
     assert cpsat._child_timeout(2.0) >= 300 and cpsat._child_timeout(30.0) >= 1800
+
+
+def test_worker_is_reused(timed_batch):
+    """One long-lived solver process serves consecutive solves (no per-solve startup)."""
+    b = timed_batch(1)
+    plan_cpsat(b, time_limit=0.1, deterministic=True, hint="serial")
+    pid = cpsat._WORKER.proc.pid
+    plan_cpsat(b, time_limit=0.1, deterministic=True, hint="serial")
+    assert cpsat._WORKER.proc.pid == pid
