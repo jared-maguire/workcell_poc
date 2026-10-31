@@ -2,6 +2,17 @@
 
 A simulation playground for scheduling plate-handling workflows (such as PCR) on a lab workcell with one robot arm, storage, a hotel, a scanner, a head stamper and thermocyclers. It compiles a batch of workflows, plans them with several strategies, simulates each plan, and writes a single self-contained HTML report comparing the results.
 
+## Example report
+
+[`docs/reports/pcr10.html`](docs/reports/pcr10.html) is a pre-generated report for 10 parallel PCR workflows on the example workcell, comparing all four default modes. Download it and open it in a browser (it is fully self-contained and works offline). In brief:
+
+| mode | result | makespan |
+|---|---|---|
+| greedy | deadlock at t=7, 0/10 done | – |
+| greedy_hotel | complete | 257 min |
+| cpsat:makespan | complete (feasible, 30 s limit) | 204 min |
+| cpsat:sum_completion | complete (feasible, 30 s limit) | 209 min |
+
 ## Quickstart
 
 ```
