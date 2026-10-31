@@ -24,17 +24,11 @@ class Stats:
     alarm: str | None
 
 
-def _block_done(trace: Trace, plan: Plan, bid: str, duration: int) -> bool:
-    """A block is done if it has a span that was not cut short by an alarm."""
-    span = trace.spans.get(bid)
-    return span is not None and span[1] - span[0] >= duration
-
-
 def compute_stats(plan: Plan, trace: Trace, batch: CompiledBatch) -> Stats:
     latency: dict[str, int | None] = {}
     waiting: dict[str, int | None] = {}
     for wf in batch.workflows:
-        if wf.blocks and all(_block_done(trace, plan, b.id, b.duration) for b in wf.blocks):
+        if wf.blocks and all(b.id in trace.completed for b in wf.blocks):
             spans = [trace.spans[b.id] for b in wf.blocks]
             lat = max(e for _, e in spans) - min(s for s, _ in spans)
             latency[wf.id] = lat

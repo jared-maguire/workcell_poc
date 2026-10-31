@@ -42,6 +42,7 @@ class Trace:
     moves: list[MoveEvent] = field(default_factory=list)
     spans: dict[str, tuple[int, int]] = field(default_factory=dict)
     lock_waits: list[tuple[str, int]] = field(default_factory=list)
+    completed: set[str] = field(default_factory=set)
     alarm: Alarm | None = None
     end_time: int = 0
     initial_locations: dict[str, str] = field(default_factory=dict)
@@ -102,6 +103,7 @@ def execute(plan: Plan, batch: CompiledBatch) -> Trace:
                 _, _, _, _, bid = heapq.heappop(heap)
                 busy -= locks(bid)
                 ended.add(bid)
+                trace.completed.add(bid)
                 trace.spans[bid] = (started[bid], t)
             try_starts(t)
             if not (heap and heap[0][0] == t):
