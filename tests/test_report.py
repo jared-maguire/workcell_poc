@@ -90,7 +90,13 @@ def test_live_report_data(workcell_small):
     d = data_of(build_report(ls.session))
     assert d["live"]["seed"] == 1 and isinstance(d["live"]["replans"], list)
     assert set(d["live"]["stats"]) >= {"replans", "adopted_replans", "not_worth_it", "reassignments",
-                                       "total_delay", "planned_makespan", "actual_makespan"}
+                                       "total_delay", "planned_makespan", "actual_makespan",
+                                       "max_idle_hold", "parks", "idle_replans", "idle_violations",
+                                       "worst_idle"}
+    assert d["live"]["max_idle_hold"] == 300
+    assert all("reason" in e and "idle_before" in e for e in d["live"]["replans"])
+    html = build_report(ls.session)
+    assert "idle-hold limit" in html and "idle-hold violations" in html
     assert len(d["runs"]) == 1 and d["runs"][0]["mode"] == "live"
 
 

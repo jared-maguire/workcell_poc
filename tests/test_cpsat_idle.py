@@ -130,3 +130,11 @@ def test_replan_keeps_fixed_parks(timed_batch):
     new = replan_cpsat(b, st2, time_limit=1, max_idle_hold=300)
     assert new.finished and validate_plan(new, b, max_idle_hold=300) == []
     assert plan_parks(new)["pcr_live-2/11"] == "hotel1" and new.start[k] == p.start[k]
+
+
+def test_plan_idle_hold_staged(timed_batch):
+    from workcell.planners.cpsat import plan_idle_hold
+    b = timed_batch(3)
+    p = plan_idle_hold(b, time_limit=1, max_idle_hold=300)
+    assert p.finished and validate_plan(p, b, max_idle_hold=300) == []
+    assert p.solver_status.count("/") == 1          # "<unlimited>/<limited>"

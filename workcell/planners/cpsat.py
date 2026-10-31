@@ -23,6 +23,7 @@ Hint = Literal["greedy", "serial"]
 
 _STATUS = {"OPTIMAL": "optimal", "FEASIBLE": "feasible", "INFEASIBLE": "infeasible",
            "UNKNOWN": "no_solution", "CRASHED": "no_solution"}
+PARK_COST = 600     # objective units per park (100 = 1 s of makespan)
 _ATTEMPTS = 3       # ruling R7: child solves tried before giving up as "CRASHED"
 
 
@@ -176,9 +177,14 @@ class _Model:
     def _gaps(self):
         """Idle-hold gaps of every chain: consecutive blocks, and the last use to leave[D].
         Hard (gap <= limit) unless `soft`, then excess >= gap - limit is penalized."""
-        self.gaps, self.excess = [], []
+        self.gaps, self.excess, self.park_delay = [], [], []
         for c in self.chains:
             d = c.blocks[-1]
+            if self.spots:                  # a parked plate should leave right away
+                pd = self.m.NewIntVar(0, 2 * self.horizon, f"park_delay[{d}]")
+                self.m.Add(pd >= self.leave[d] - self.end[c.blocks[-2]]).OnlyEnforceIf(
+                    self.parked[d])
+                self.park_delay.append(pd)
             for a, b in zip(c.blocks, c.blocks[1:]):
                 nxt = self.leave[d] if b == d else self.start[b]
                 self.m.Add(nxt >= self.end[a])
@@ -294,7 +300,9 @@ class _Model:
 
     def objective(self, objective: Objective):
         """Minimize the objective. With an idle-hold limit: 100 x objective + total idle-hold
-        time (leave right away), and when soft, total excess over the limit first."""
+        time (keep waits short, leaving headroom under the limit) + how long parked plates
+        wait before leaving + PARK_COST per park (park only when it is worth it, and then
+        right away); when soft, total excess over the limit comes first."""
         self.mk = self.m.NewIntVar(0, 2 * self.horizon, "makespan")
         self.m.AddMaxEquality(self.mk, list(self.end.values()))
         if objective == "makespan":
@@ -311,7 +319,8 @@ class _Model:
         if not self.limit:
             self.m.Minimize(primary)
             return
-        total = 100 * primary + sum(self.gaps)
+        total = (100 * primary + sum(self.gaps) + sum(self.park_delay)
+                 + PARK_COST * sum(self.parked.values()))
         if self.soft:
             total += 200 * self.horizon * (len(self.gaps) + 1) * sum(self.excess)
         self.m.Minimize(total)
@@ -403,6 +412,30 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     elif hint not in (None, False):
         raise ValueError(f"unknown CP-SAT hint {hint!r}")
     return _solve_plan(model, time_limit, deterministic, objective, t0)[0]
+
+
+def plan_idle_hold(batch: CompiledBatch, time_limit: float, max_idle_hold: int) -> Plan:
+    """Initial live plan under an idle-hold limit, in two deterministic stages of half the
+    budget each: solve without the limit (serial warm start), then with the hard limit warm-
+    started from that plan (a cold start rarely improves on the serial plan). If the hard
+    stage finds nothing, the soft limit (always solvable) is used instead.
+    solver_status is "<stage 1>/<stage 2>"."""
+    t0 = time.perf_counter()
+    first = plan_cpsat(batch, time_limit=time_limit / 2, deterministic=True, hint="serial")
+    if not first.finished:
+        return first
+    for soft in (False, True):
+        m = _Model(batch, None, max_idle_hold, soft=soft)
+        m.objective("makespan")
+        m.hint_starts(first.start)
+        m.hint_bindings(first.bindings)
+        m.hint_parks({})
+        plan, _ = _solve_plan(m, time_limit / 2, True, "makespan", t0)
+        if plan.finished:
+            break
+    plan.solver_status = f"{first.solver_status}/{plan.solver_status}"
+    plan.solve_seconds = time.perf_counter() - t0
+    return plan
 
 
 def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2.0,

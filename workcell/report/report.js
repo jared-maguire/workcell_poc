@@ -100,6 +100,13 @@
   const pct = (x, T) => (100 * x / T) + "%";
   function replanLabel(e) {
     const what = (compiledById[e.trigger] && compiledById[e.trigger].label) || e.trigger;
+    if (e.reason === "idle_hold") {
+      const idle = `a plate would idle ${mss(e.idle_before)} past the ${mss(LIVE.max_idle_hold)} limit`;
+      if (e.adopted) return `re-planned at ${hms(e.time)} — ${idle}; `
+        + (e.idle_after ? `${mss(e.idle_after)} over after re-planning` : "fixed") + `; finish ${hms(e.makespan_before)} → ${hms(e.makespan_after)}`;
+      if (e.status === "not_worth_it") return `kept plan at ${hms(e.time)} — ${idle}; re-planning could not reduce it`;
+      return `re-plan failed (${e.status}) at ${hms(e.time)} — ${idle}`;
+    }
     if (e.adopted) return `re-planned at ${hms(e.time)} — ${what} ran ${mss(e.delay)} long; `
       + `projected push ${mss(e.push)} > ${mss(LIVE.threshold)}; finish ${hms(e.makespan_before)} → ${hms(e.makespan_after)}`
       + (e.reassigned ? `, reassigned ${e.reassigned}` : "");
@@ -209,6 +216,11 @@
         ["total delay", () => hms(L.total_delay)],
         ["planned makespan", () => hms(L.planned_makespan)],
         ["actual makespan", () => hms(L.actual_makespan)]);
+      if (L.max_idle_hold) rows.push(
+        ["idle-hold limit", () => mss(L.max_idle_hold)],
+        ["parks", () => String(L.parks)],
+        ["idle-hold re-plans", () => String(L.idle_replans)],
+        ["idle-hold violations", () => L.idle_violations ? `${L.idle_violations} (worst ${mss(L.worst_idle)})` : "0"]);
     }
     const head = `<thead><tr><th></th>${runs.map((r, i) => `<th data-run="${i}">${esc(r.mode)}</th>`).join("")}</tr></thead>`;
     const body = rows.map(([name, f]) => `<tr><td>${name}</td>${runs.map((r, i) =>

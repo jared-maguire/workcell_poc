@@ -12,7 +12,7 @@ from workcell.ir import CompiledBatch
 from workcell.live.executor import LiveResult, execute_live
 from workcell.live.noise import NoiseParams
 from workcell.plan import Plan, bind_batch
-from workcell.planners.cpsat import plan_cpsat, replan_cpsat
+from workcell.planners.cpsat import plan_cpsat, plan_idle_hold, replan_cpsat
 from workcell.run import RunResult, Session
 from workcell.stats import compute_stats
 from workcell.validate import validate_plan
@@ -96,8 +96,10 @@ def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
              batch_source: str = "", max_idle_hold: int | None = 300) -> LiveSession:
     max_idle_hold = max_idle_hold or None
     batch = compile_batch(workcell, specs)
-    initial = plan_cpsat(batch, time_limit=time_limit, deterministic=True, hint="serial",
-                         max_idle_hold=max_idle_hold)
+    if max_idle_hold:
+        initial = plan_idle_hold(batch, time_limit, max_idle_hold)
+    else:
+        initial = plan_cpsat(batch, time_limit=time_limit, deterministic=True, hint="serial")
     if not initial.finished:
         raise RuntimeError(f"initial plan failed: {initial.status} ({initial.solver_status})")
     result = execute_live(batch, initial, NoiseParams(seed, noise, delay_prob, delay_range),
