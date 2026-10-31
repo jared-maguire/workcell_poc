@@ -1,8 +1,12 @@
 import re
-import pytest
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
+
+from helpers import data_of
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,12 +40,12 @@ def test_cli_scale(tmp_path):
                        capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0, r.stderr
     assert "complete" in r.stdout and "3/3" in r.stdout and out.exists()
-    text = re.sub(r"<[^>]+>", "", out.read_text())  # batch source is syntax-highlighted into spans
+    # data JSON escapes `<`, so decode it; the batch source is syntax-highlighted into spans
+    text = re.sub(r"<[^>]+>", "", data_of(out.read_text())["sources"]["batch"])
     assert "python -m workcell scale --workflows 3" in text
 
 
 def test_cli_unknown_mode_rejected_before_planning():
-    import time
     t0 = time.perf_counter()
     r = _run("examples/workcell.yaml", "examples/pcr_batch.py", "--mode", "cpsat", "--mode", "bogus")
     assert r.returncode == 2 and "bogus" in r.stderr and "greedy_hotel" in r.stderr
@@ -63,3 +67,14 @@ def test_cli_bad_input_files_exit_2(tmp_path, make):
 def _write(path, text):
     path.write_text(text)
     return str(path)
+
+
+def test_success_criterion_pcr10():
+    from workcell.run import run_files
+    sess = run_files(ROOT / "examples/workcell.yaml", ROOT / "examples/pcr_batch.py",
+                     ["greedy", "greedy_hotel", "cpsat"], time_limit=20)
+    greedy, hotel, cpsat = sess.runs
+    assert greedy.stats.status == "deadlock" and greedy.plan.deadlock.cycle
+    assert hotel.stats.status == "complete" and hotel.stats.completed == 10 and hotel.errors == []
+    assert cpsat.stats.status in ("optimal", "feasible")
+    assert cpsat.stats.completed == cpsat.stats.total == 10 and cpsat.errors == []

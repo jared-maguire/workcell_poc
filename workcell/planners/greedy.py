@@ -201,6 +201,54 @@ class _Greedy:
         self._start(park, {}, t)
         return True
 
+    # -- deadlock explanation -----------------------------------------------
+    def _holders(self, blk: Block) -> set[str]:
+        """Other workflows holding something `blk` waits for, over every binding choice: plates
+        in its full or reserved destination nests (or in the full hotels it wants to park in),
+        and borrowed plates."""
+        wc, holders = self.batch.workcell, set()
+        bound = self.bindings[blk.workflow]
+        for new in self._choices(blk):
+            concrete = blk.bind({**bound, **new})
+            nests = [m.dst for m in concrete.moves]
+            if self.park:
+                nests += [s for m in concrete.moves
+                          if wc.instruments[wc.nest_owner(m.dst)].type not in ("storage", "hotel")
+                          for s in self.siblings[m.dst]]
+            if blk.id in self.hotel_full:
+                nests += wc.of_type("hotel")
+            holders |= {self.placed_by.get(p) for n in nests for p in self._occupants(n)}
+            holders |= {self.borrow_holder.get(p) for p in concrete.plates}
+        return holders - {None, blk.workflow}
+
+    def _wait_cycle(self, waiting: list[Block]) -> list[str]:
+        """A cycle in the wait-for graph: waiting block -> workflow holding what it needs ->
+        that workflow's waiting blocks. Returns the cycle's block ids, or [] if none."""
+        by_wf: dict[str, list[str]] = {}
+        for b in waiting:
+            by_wf.setdefault(b.workflow, []).append(b.id)
+        edges = {b.id: [w for wf in sorted(self._holders(b)) for w in by_wf.get(wf, [])]
+                 for b in waiting}
+        done: set[str] = set()
+
+        def dfs(node: str, path: list[str]) -> list[str]:
+            if node in path:
+                return path[path.index(node):]
+            if node in done:
+                return []
+            for nxt in edges[node]:
+                cycle = dfs(nxt, [*path, node])
+                if cycle:
+                    return cycle
+            done.add(node)
+            return []
+
+        for b in waiting:
+            cycle = dfs(b.id, [])
+            if cycle:
+                return cycle
+        return []
+
     def _hotel_reason(self, blk: Block) -> list[str]:
         reason = self.hotel_full.get(blk.id)
         return [reason] if reason else []
@@ -227,9 +275,11 @@ class _Greedy:
             if all(bid in self.done for bid in compiled):
                 return self._plan(mode, "complete")
             if not self.running:
+                ready = self._ready()
                 waits = [Wait(b.id, "; ".join([*self._try_bind(b)[2], *self._hotel_reason(b)]))
-                         for b in self._ready()]
-                return self._plan(mode, "deadlock", Deadlock(time=t, waits=waits))
+                         for b in ready]
+                return self._plan(mode, "deadlock",
+                                  Deadlock(time=t, waits=waits, cycle=self._wait_cycle(ready)))
             t = min(self.running.values())
 
     def _plan(self, mode: str, status, deadlock: Deadlock | None = None) -> Plan:

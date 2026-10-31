@@ -13,7 +13,8 @@ from workcell.planners.greedy import plan_greedy
 
 Objective = Literal["makespan", "sum_completion"]
 
-_STATUS = {cp_model.OPTIMAL: "optimal", cp_model.FEASIBLE: "feasible"}
+_STATUS = {cp_model.OPTIMAL: "optimal", cp_model.FEASIBLE: "feasible",
+           cp_model.INFEASIBLE: "infeasible", cp_model.UNKNOWN: "no_solution"}
 
 
 def _var(name: str) -> str | None:
@@ -146,7 +147,8 @@ class _Model:
 
 def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
                time_limit: float = 30.0, hint: bool = True) -> Plan:
-    """Solve the batch with CP-SAT; status "optimal", "feasible", or "no_solution"."""
+    """Solve the batch with CP-SAT; status "optimal", "feasible", "infeasible" (proven), or
+    "no_solution" (time limit / unknown). An invalid model is a bug and raises RuntimeError."""
     t0 = time.perf_counter()
     model = _Model(batch)
     model.objective(objective)
@@ -155,11 +157,16 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     solver = cp_model.CpSolver()
     solver.parameters.num_workers = 8
     solver.parameters.max_time_in_seconds = time_limit
-    status = _STATUS.get(solver.Solve(model.m), "no_solution")
+    code = solver.Solve(model.m)
+    raw = solver.StatusName(code)
+    if code not in _STATUS:
+        raise RuntimeError(f"CP-SAT returned {raw}: {model.m.Validate() or 'invalid model'}")
+    status = _STATUS[code]
     mode = f"cpsat:{objective}"
-    if status == "no_solution":
+    if status in ("infeasible", "no_solution"):
         return Plan(mode=mode, blocks={}, start={}, bindings={}, status=status,
-                    solve_seconds=time.perf_counter() - t0, objective=objective)
+                    solve_seconds=time.perf_counter() - t0, objective=objective,
+                    solver_status=raw)
     bindings = {wf.id: {} for wf in batch.workflows}
     for (wf, var, cand), lit in model.x.items():
         if solver.Value(lit):
@@ -167,4 +174,4 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     return Plan(mode=mode, blocks=bind_batch(batch, bindings),
                 start={bid: solver.Value(s) for bid, s in model.start.items()},
                 bindings=bindings, status=status,
-                solve_seconds=time.perf_counter() - t0, objective=objective)
+                solve_seconds=time.perf_counter() - t0, objective=objective, solver_status=raw)

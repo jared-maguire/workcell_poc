@@ -75,3 +75,19 @@ def test_hotel_full_deadlock_is_explained():
     assert p.status == "deadlock"
     assert any("hotel full" in w.reason and "hotel1 1/1" in w.reason for w in p.deadlock.waits)
     assert validate_plan(p, b) == []
+
+
+def test_deadlock_wait_cycle(compiled_small):
+    p = plan_greedy(compiled_small(2))
+    # pcr-1/02 waits for stamp1.src (held by pcr-0's sample); pcr-0/03 waits for scan1 (pcr-1's sample)
+    assert set(p.deadlock.cycle) == {"pcr-0/03", "pcr-1/02"}
+    assert len(p.deadlock.cycle) == 2
+
+
+def test_hotel_full_deadlock_has_cycle():
+    inst = [{**i, "slots": 1} if i["type"] == "hotel" else i for i in SMALL["instruments"]]
+    b = compile_batch(parse_workcell({**SMALL, "instruments": inst}),
+                      [pcr(sample="S0001", primer="P0001"), pcr(sample="S0002", primer="P0002")])
+    d = plan_greedy(b, park=True).deadlock
+    waiting = {w.block for w in d.waits}
+    assert d.cycle and set(d.cycle) <= waiting

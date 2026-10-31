@@ -1,7 +1,7 @@
 """Plan model: a (possibly partial) schedule of bound blocks with start times."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from workcell.ir import Block, CompiledBatch
@@ -17,6 +17,7 @@ class Wait:
 class Deadlock:
     time: int
     waits: list[Wait]
+    cycle: list[str] = field(default_factory=list)   # waiting block ids forming a wait-for cycle
 
 
 @dataclass
@@ -25,10 +26,11 @@ class Plan:
     blocks: dict[str, Block]
     start: dict[str, int]
     bindings: dict[str, dict[str, str]]
-    status: Literal["complete", "deadlock", "optimal", "feasible", "no_solution"]
+    status: Literal["complete", "deadlock", "optimal", "feasible", "infeasible", "no_solution"]
     deadlock: Deadlock | None = None
     solve_seconds: float = 0.0
     objective: str | None = None
+    solver_status: str | None = None     # raw CP-SAT status name (cpsat modes only)
 
     def end(self, block_id: str) -> int:
         return self.start[block_id] + self.blocks[block_id].duration

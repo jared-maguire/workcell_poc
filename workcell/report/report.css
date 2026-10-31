@@ -87,7 +87,8 @@ button, select { font: inherit; color: inherit; }
 .badge.complete, .badge.optimal { background: var(--green); }
 .badge.feasible { background: var(--amber); }
 .badge.deadlock, .badge.alarm { background: var(--red); }
-.badge.no_solution { background: var(--muted); }
+.badge.no_solution, .badge.infeasible { background: var(--muted); }
+.badge.incomplete { background: var(--amber); }
 
 .transport { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .btn {
@@ -131,6 +132,7 @@ main { max-width: 1440px; margin: 0 auto; padding: 18px 24px 80px; display: flex
 .legend i.hatch { background: repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 5px); border: 1px solid var(--muted); }
 .legend i.wait { background: var(--wait); }
 .legend i.ghost { border: 1.5px dashed var(--red); }
+.legend i.ghost.cycle { border: 2px solid var(--red); background: var(--red-soft); }
 .legend i.borrowed { background: var(--chip-neutral); outline: 1.5px dashed var(--muted); outline-offset: -1.5px; }
 
 /* ---------- alerts ---------- */
@@ -142,6 +144,9 @@ main { max-width: 1440px; margin: 0 auto; padding: 18px 24px 80px; display: flex
 .alert td { padding: 3px 14px 3px 0; vertical-align: top; }
 .alert .blk { font-family: var(--mono); cursor: pointer; color: var(--accent); white-space: nowrap; }
 .alert .blk:hover { text-decoration: underline; }
+.alert tr.cycle td { font-weight: 600; }
+.alert .cyc-tag { font: 600 10px var(--sans); color: #fff; background: var(--red); border-radius: 999px; padding: 0 6px; }
+.alert .cycle-line { margin: 4px 0 8px; }
 .errors { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, transparent); }
 .errors h3 { color: var(--amber); }
 .errors ul { margin: 0; padding-left: 18px; font: 12px var(--mono); }
@@ -158,10 +163,12 @@ table.stats .active { background: var(--accent-soft); }
 table.stats .best { font-weight: 700; }
 table.stats .best::after { content: " ★"; color: var(--amber); font-size: 11px; }
 table.stats td.alarm-msg { white-space: normal; max-width: 260px; text-align: left; color: var(--red); font-size: 12px; }
-.util { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 28px; }
-.ub { display: grid; grid-template-columns: 80px 1fr 44px; align-items: center; gap: 8px; font: 12px var(--mono); }
-.ub .rail { height: 9px; border-radius: 3px; background: var(--track); border: 1px solid var(--line); overflow: hidden; }
-.ub .fill { height: 100%; border-radius: 2px; }
+.util { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 4px 28px; }
+.ub { display: grid; grid-template-columns: 80px 1fr 44px 76px; align-items: center; gap: 8px; font: 12px var(--mono); }
+.ub .rail { display: flex; height: 9px; border-radius: 3px; background: var(--track); border: 1px solid var(--line); overflow: hidden; }
+.ub .fill { height: 100%; border-radius: 2px; flex: none; }
+.ub .fill.blocked { border-radius: 0 2px 2px 0; background: repeating-linear-gradient(135deg, var(--c) 0 2px, transparent 2px 4px); opacity: .75; }
+.ub .blk-m { color: var(--red); font-size: 11px; white-space: nowrap; }
 .ub .pct { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ---------- gantt ---------- */
@@ -191,6 +198,7 @@ table.stats td.alarm-msg { white-space: normal; max-width: 260px; text-align: le
 .bar.ins { background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.55) 0 2px, transparent 2px 5px) !important; }
 .bar.waitspan { top: 6px; bottom: 6px; background: var(--wait); cursor: crosshair; border-radius: 3px; pointer-events: none; }
 .bar.ghost { background: transparent; border: 1.5px dashed var(--red); }
+.bar.ghost.cycle { background: var(--red-soft); border: 2px solid var(--red); }
 .bar.alarm { box-shadow: 0 0 0 2px var(--red); }
 .bar.sel { box-shadow: 0 0 0 2px var(--sel); z-index: 2; }
 .g-inner.has-sel .bar:not(.sel):not(.waitspan) { opacity: .35; }
@@ -273,6 +281,8 @@ table.blocks tr.sel td { background: var(--accent-soft); }
 table.blocks tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 table.blocks tr.waiting td:first-child { box-shadow: inset 3px 0 0 var(--red); }
 table.blocks tr.waiting .bid::after { content: " waiting"; color: var(--red); font: 600 10px var(--sans); }
+table.blocks tr.waiting.cycle td:first-child { box-shadow: inset 5px 0 0 var(--red); }
+table.blocks tr.waiting.cycle .bid::after { content: " waiting · cycle"; }
 table.blocks tr.notrun { opacity: .55; }
 .bid, .dur, .deps { font-family: var(--mono); white-space: nowrap; }
 .dur { text-align: right; }

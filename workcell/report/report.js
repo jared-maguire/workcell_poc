@@ -20,7 +20,8 @@
   };
   const STATUS_LABEL = {
     complete: "complete", optimal: "optimal", feasible: "feasible",
-    deadlock: "deadlock", no_solution: "no solution", alarm: "alarm",
+    deadlock: "deadlock", no_solution: "no solution", infeasible: "infeasible", alarm: "alarm",
+    incomplete: "incomplete",
   };
   const FINISHED = new Set(["complete", "optimal", "feasible"]);
   const SPEEDS = [0.5, 1, 2, 5, 10, 20, 50, 100, 200];
@@ -94,13 +95,14 @@
     let T = run.stats.makespan || 0;
     run.blocks.forEach(b => { byId[b.id] = b; T = Math.max(T, b.end); });
     const ghosts = [];
+    const cycle = new Set(run.deadlock ? run.deadlock.cycle || [] : []);
     if (run.deadlock) {
       const t0 = run.deadlock.time;
       run.deadlock.waits.forEach(w => {
         const c = compiledById[baseId(w.block)];
         const dur = Math.max(1, c ? c.duration : 1);
         const g = { id: w.block, workflow: wfOf(w.block), kind: c ? c.kind : "", label: c ? c.label : w.block,
-          start: t0, end: t0 + dur, reason: w.reason, ghost: true, instructions: c ? c.instructions : [],
+          start: t0, end: t0 + dur, reason: w.reason, ghost: true, cycle: cycle.has(w.block), instructions: c ? c.instructions : [],
           instruments: c ? c.instruments : [], plates: c ? c.plates : [] };
         ghosts.push(g); byId[g.id] = byId[g.id] || g;
         T = Math.max(T, g.end);
@@ -118,7 +120,7 @@
     const markers = [];
     if (run.deadlock) markers.push({ time: run.deadlock.time, label: `deadlock t=${run.deadlock.time}` });
     if (run.alarm) markers.push({ time: run.alarm.time, label: `alarm t=${run.alarm.time}` });
-    return (run._p = { T, byId, ghosts, plateMoves, instBlocks, markers });
+    return (run._p = { T, byId, ghosts, cycle, plateMoves, instBlocks, markers });
   }
 
   // ---------------------------------------------------------------- state
@@ -150,6 +152,10 @@
       ["completed", r => `${r.stats.completed} / ${r.stats.total}`],
       ["mean latency", r => (r.stats.mean_latency === null ? "—" : `${fmtNum(r.stats.mean_latency, 1)} min`)],
       ["max latency", r => (r.stats.max_latency === null ? "—" : `${r.stats.max_latency} min`)],
+      ["mean completion", r => (r.stats.mean_completion === null ? "—" : `${fmtNum(r.stats.mean_completion, 1)} min`)],
+      ["waiting (total)", r => (r.stats.total_waiting === null ? "—" : `${r.stats.total_waiting} min`)],
+      ["waiting (mean)", r => (r.stats.mean_waiting === null ? "—" : `${fmtNum(r.stats.mean_waiting, 1)} min`)],
+      ["blocked (total)", r => `${Object.values(r.stats.blocked || {}).reduce((a, b) => a + b, 0)} min`],
       ["solver status", r => esc(STATUS_LABEL[r.status] || r.status)],
       ["solve time", r => `${Number(r.stats.solve_seconds).toFixed(2)} s`],
       ["lock waits", r => String(r.stats.lock_waits)],
@@ -172,11 +178,15 @@
   function renderUtil() {
     const run = R();
     const u = run.stats.utilization || {};
+    const bl = run.stats.blocked || {};
+    const T = run.stats.makespan || 0;
     $("#util").innerHTML = instSorted.map(inst => {
       const v = u[inst.id] || 0;
-      return `<div class="ub"><span title="${esc(inst.type)}">${esc(inst.id)}</span><div class="rail"><div class="fill" style="width:${(100 * v).toFixed(1)}%;background:${instColor(inst.id)}"></div></div><span class="pct">${Math.round(100 * v)}%</span></div>`;
+      const has = inst.id in bl, m = bl[inst.id] || 0, bv = T ? m / T : 0;
+      const title = has ? `${m} min holding a plate while idle (blocked)` : "";
+      return `<div class="ub" title="${esc(title)}"><span title="${esc(inst.type)}">${esc(inst.id)}</span><div class="rail"><div class="fill" style="width:${(100 * v).toFixed(1)}%;background:${instColor(inst.id)}"></div><div class="fill blocked" style="width:${(100 * bv).toFixed(1)}%;--c:${instColor(inst.id)}"></div></div><span class="pct">${Math.round(100 * v)}%</span><span class="blk-m">${has ? (m ? `${m}m blocked` : "—") : ""}</span></div>`;
     }).join("");
-    $("#util-note").textContent = `${run.mode} · busy time / makespan (${run.stats.makespan} min)`;
+    $("#util-note").textContent = `${run.mode} · solid: busy time / makespan (${run.stats.makespan} min) · hatched: blocked, a plate rests in the instrument while it is idle`;
   }
 
   // ---------------------------------------------------------------- alerts
@@ -185,11 +195,19 @@
     const parts = [];
     if (run.deadlock) {
       const dl = run.deadlock;
+      const cyc = dl.cycle || [];
+      const rank = id => { const i = cyc.indexOf(id); return i < 0 ? cyc.length : i; };
+      const waits = dl.waits.map((w, i) => [w, i]).sort((a, b) => rank(a[0].block) - rank(b[0].block) || a[1] - b[1]).map(x => x[0]);
+      const cycText = cyc.length
+        ? `<p class="cycle-line"><b>Wait cycle:</b> ${[...cyc, cyc[0]].map(id => `<span class="blk" data-sel="${esc(id)}">${esc(id)}</span>`).join(" → ")} <span class="muted small">(each waits for something held by the next one's workflow)</span></p>`
+        : "";
       parts.push(`<div class="alert"><h3>Deadlock at t=${dl.time}</h3>
-        <p>Work remains but nothing is running and nothing can start. ${run.stats.completed}/${run.stats.total} workflows complete. Waiting blocks (dashed red on the workflow Gantt):</p>
-        <div class="scroll"><table>${dl.waits.map(w => {
+        <p>Work remains but nothing is running and nothing can start. ${run.stats.completed}/${run.stats.total} workflows complete. Waiting blocks (dashed red on the workflow Gantt; the wait cycle is solid red and listed first):</p>
+        ${cycText}
+        <div class="scroll"><table>${waits.map(w => {
           const c = compiledById[baseId(w.block)];
-          return `<tr><td><span class="blk" data-sel="${esc(w.block)}">${esc(w.block)}</span></td><td>${esc(c ? c.label : "")}</td><td class="muted">${esc(w.reason)}</td></tr>`;
+          const inCycle = cyc.includes(w.block);
+          return `<tr class="${inCycle ? "cycle" : ""}"><td><span class="blk" data-sel="${esc(w.block)}">${esc(w.block)}</span>${inCycle ? ' <span class="cyc-tag">cycle</span>' : ""}</td><td>${esc(c ? c.label : "")}</td><td class="muted">${esc(w.reason)}</td></tr>`;
         }).join("")}</table></div></div>`);
     }
     if (run.alarm) {
@@ -233,6 +251,7 @@
     const cls = ["bar"];
     if (b.inserted) cls.push("ins");
     if (b.ghost) cls.push("ghost");
+    if (b.cycle) cls.push("cycle");
     const run = R();
     if (run.alarm && run.alarm.block === b.id) cls.push("alarm");
     if (extra) cls.push(extra);
@@ -278,7 +297,8 @@
     $("#legend-inst").innerHTML = wfPart + `<span><i class="hatch"></i>planner-inserted</span>`;
     const types = [...new Set(D.instruments.map(i => i.type))].sort((a, b) => typeRank(a) - typeRank(b));
     $("#legend-wf").innerHTML = types.map(t => `<span><i style="background:${TYPE_COLOR[t] || "#888"}"></i>${esc(TYPE_LABEL[t] || t)}</span>`).join("")
-      + `<span><i class="wait"></i>waiting</span>` + (P().ghosts.length ? `<span><i class="ghost"></i>blocked at deadlock</span>` : "");
+      + `<span><i class="wait"></i>waiting</span>` + (P().ghosts.length ? `<span><i class="ghost"></i>blocked at deadlock</span>` : "")
+      + (P().cycle.size ? `<span><i class="ghost cycle"></i>deadlock wait cycle</span>` : "");
     $("#legend-floor").innerHTML = `<span><i style="background:${wfColor(0)}"></i>owned plate (workflow color)</span><span><i class="borrowed"></i>borrowed / shared</span><span><i style="border:1.5px solid var(--busy)"></i>busy</span>`;
   }
 
@@ -317,7 +337,7 @@
     const b = P().byId[bar.dataset.b];
     if (!b) return hideTip();
     const head = b.ghost
-      ? `waiting since t=${b.start} · ${esc(b.reason)}`
+      ? `waiting since t=${b.start}${b.cycle ? " · in the wait cycle" : ""} · ${esc(b.reason)}`
       : `${esc(b.id)} · ${esc(b.kind)}${b.inserted ? " · planner-inserted" : ""} · t ${b.start}–${b.end} (${b.end - b.start} min)`;
     tip.innerHTML = `<div class="tt">${esc(b.workflow)} · ${esc(b.label)}</div><div class="tm">${head}</div>
       <div class="tm">locks: ${esc([...b.instruments, ...b.plates].join(", "))}</div>
@@ -600,9 +620,11 @@
   function markCompiledForRun() {
     const run = R();
     const waiting = new Set(run.deadlock ? run.deadlock.waits.map(w => baseId(w.block)) : []);
+    const cycle = new Set([...P().cycle].map(baseId));
     const ran = new Set(run.blocks.map(b => baseId(b.id)));
     for (const id in rowEl) {
       rowEl[id].classList.toggle("waiting", waiting.has(id));
+      rowEl[id].classList.toggle("cycle", cycle.has(id));
       rowEl[id].classList.toggle("notrun", run.blocks.length > 0 && !ran.has(id) && !waiting.has(id));
     }
     $$("#compiled .bind").forEach(el => { el.style.fontWeight = +el.dataset.bindRun === S.run ? "600" : ""; el.style.opacity = +el.dataset.bindRun === S.run ? "1" : ".6"; });
@@ -643,12 +665,16 @@
     markStatsActive();
     renderAlerts();
     const run = R();
-    const none = run.status === "no_solution" || (!run.blocks.length && !run.deadlock && !run.alarm);
+    const unsolved = run.status === "no_solution" || run.status === "infeasible";
+    const none = unsolved || (!run.blocks.length && !run.deadlock && !run.alarm);
     $("#run-views").hidden = none;
     $("#run-empty").hidden = !none;
     if (none) {
-      $("#run-empty").innerHTML = run.status === "no_solution"
-        ? `<b>No solution</b>The ${esc(run.mode)} planner found no schedule (e.g. time limit reached before a feasible plan). Nothing was executed, so there are no charts for this mode.`
+      const why = run.status === "infeasible"
+        ? "the model was proven infeasible"
+        : "no feasible plan was found before the solver stopped";
+      $("#run-empty").innerHTML = unsolved
+        ? `<b>${run.status === "infeasible" ? "Infeasible" : "No solution"}</b>The ${esc(run.mode)} planner found no schedule: ${why} (solver status ${esc(run.solver_status || "unknown")}). Nothing was executed, so there are no charts for this mode.`
         : `<b>Nothing ran</b>This run executed no blocks.`;
     }
     renderUtil();

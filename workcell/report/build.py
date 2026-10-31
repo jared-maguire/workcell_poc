@@ -67,6 +67,7 @@ def _run(res: RunResult) -> dict:
     return {
         "mode": res.mode,
         "status": plan.status,
+        "solver_status": plan.solver_status,
         "stats": _jsonable(dataclasses.asdict(res.stats)),
         "errors": list(res.errors),
         "blocks": blocks,
@@ -106,7 +107,9 @@ def _pygments_css() -> str:
 
 
 def build_report(session: Session) -> str:
-    data = json.dumps(report_data(session), separators=(",", ":")).replace("</", "<\\/")
+    # `<` -> \u003c: no `</script`, `<!--` or `<script` can appear inside the data block;
+    # anything not JSON-native (an odd workflow arg) falls back to its str()
+    data = json.dumps(report_data(session), separators=(",", ":"), default=str).replace("<", "\\u003c")
     html = (_HERE / "template.html").read_text()
     # data last: it is user content and must not be scanned for placeholders
     for key, value in (("/*__CSS__*/", (_HERE / "report.css").read_text()),
