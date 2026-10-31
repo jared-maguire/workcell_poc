@@ -1,0 +1,27 @@
+# Small example workcell: one arm moves plates between the instruments below.
+instruments:
+  # The single robot arm; it performs every plate move.
+  - {id: arm1, type: arm}
+  # Large storage; holds all plates at the start of a run.
+  - {id: store1, type: storage, slots: 2000}
+  # Hotel: short-term parking with limited slots, used by greedy_hotel and CP-SAT.
+  - {id: hotel1, type: hotel, slots: 50}
+  # Barcode scanner: reads a plate's barcode (one plate at a time).
+  - {id: scan1, type: barcode_scanner}
+  # Head stamper: has two nests, stamp1.src and stamp1.dst, to transfer between plates.
+  - {id: stamp1, type: head_stamper}
+  # Two thermocyclers: they run the PCR programs; workflows are bound to either.
+  - {id: tc1, type: thermocycler}
+  - {id: tc2, type: thermocycler}
+
+# Integer minutes per instruction. Lookup order: "<type>.<op>", "<op>", "default".
+durations:
+  default: 1
+  # check_status is 0 because it is a read, not a physical action.
+  check_status: 0
+
+# Plates are generated with sequential barcodes (prefix + 4 digits, e.g. S0001).
+plates:
+  - {generate: sample, prefix: S, count: 10, location: store1}
+  - {generate: primer, prefix: P, count: 2, location: store1}
+  - {generate: empty, prefix: E, count: 20, location: store1}
