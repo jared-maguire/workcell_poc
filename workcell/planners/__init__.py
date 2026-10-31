@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from workcell.ir import CompiledBatch
 from workcell.plan import Plan
+from workcell.planners.cpsat import plan_cpsat
 from workcell.planners.greedy import plan_greedy
 
 MODES = ("greedy", "greedy:round_robin", "greedy:fifo",
@@ -16,4 +17,4 @@ def make_plan(batch: CompiledBatch, mode: str, time_limit: float = 30.0) -> Plan
     family, _, option = mode.partition(":")
     if family in ("greedy", "greedy_hotel"):
         return plan_greedy(batch, priority=option or "round_robin", park=family == "greedy_hotel")
-    raise ValueError(f"mode {mode!r} is not available yet")
+    return plan_cpsat(batch, objective=option or "makespan", time_limit=time_limit)
