@@ -11,7 +11,7 @@ A simulation playground for scheduling plate-handling workflows (such as PCR) on
 | greedy | deadlock at t=7, 0/10 done | – |
 | greedy_hotel | done | 257 min |
 | cpsat:makespan | done (not proven best within the 30 s limit) | 204 min |
-| cpsat:sum_completion | done (not proven best within the 30 s limit) | 211 min |
+| cpsat:sum_completion | done (not proven best within the 30 s limit) | 207 min |
 
 The report opens on the best run (shortest makespan among runs where every workflow finished).
 

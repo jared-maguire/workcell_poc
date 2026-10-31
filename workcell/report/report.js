@@ -528,10 +528,10 @@
   const speedSel = $("#speed");
   speedSel.innerHTML = SPEEDS.map(s => `<option value="${s}">${s} min/s</option>`).join("");
   speedSel.addEventListener("change", () => { S.speed = +speedSel.value; S.speedTouched = true; });
+  const DEFAULT_SPEED = 2;
   function autoSpeed() {
     if (S.speedTouched) return;
-    const T = P().T;
-    S.speed = SPEEDS.find(s => s >= T / 20) || SPEEDS[SPEEDS.length - 1];
+    S.speed = DEFAULT_SPEED;
     speedSel.value = String(S.speed);
   }
 
