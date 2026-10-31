@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from workcell.config import parse_workcell
@@ -41,4 +43,18 @@ def compiled_small(workcell_small, pcr_specs):
 
     def make(n):
         return compile_batch(workcell_small, pcr_specs(n))
+    return make
+
+
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
+
+
+@pytest.fixture
+def timed_batch(workcell_small):
+    """Compile the first n timed PCR workflows of examples/pcr_live.py (seconds-scale)."""
+    from workcell.compiler import compile_batch
+    from workcell.dsl import load_batch
+
+    def make(n):
+        return compile_batch(workcell_small, load_batch(EXAMPLES / "pcr_live.py")[0][:n])
     return make

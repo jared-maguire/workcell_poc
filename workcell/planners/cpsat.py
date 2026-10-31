@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Literal
 
 from ortools.sat.python import cp_model
@@ -22,20 +23,46 @@ def _var(name: str) -> str | None:
     return name.partition(".")[0] if name.startswith("?") else None
 
 
+@dataclass
+class ReplanState:
+    """What has already happened when re-planning at time `now`: `fixed` maps each done or
+    running block to its (start, end); `bindings` are var bindings that must stay; `hint`
+    holds suggested starts (replaces the greedy hint when non-empty)."""
+    now: int
+    fixed: dict[str, tuple[int, int]]
+    bindings: dict[str, dict[str, str]]
+    hint: dict[str, int] = field(default_factory=dict)
+
+
 class _Model:
-    def __init__(self, batch: CompiledBatch):
+    def __init__(self, batch: CompiledBatch, state: ReplanState | None = None):
         self.batch = batch
         self.m = cp_model.CpModel()
         blocks = batch.all_blocks()
-        horizon = sum(b.duration for b in blocks)
-        self.start = {b.id: self.m.NewIntVar(0, horizon, f"s[{b.id}]") for b in blocks}
-        self.end = {b.id: self.start[b.id] + b.duration for b in blocks}
+        fixed = state.fixed if state else {}
+        # interval size per block: actual (end - start) for fixed blocks, else planned duration
+        self.size = {b.id: fixed[b.id][1] - fixed[b.id][0] if b.id in fixed else b.duration
+                     for b in blocks}
+        if state is None:
+            horizon = sum(b.duration for b in blocks)
+            bounds = {b.id: (0, horizon) for b in blocks}
+        else:
+            horizon = (max([state.now] + [e for _, e in fixed.values()])
+                       + sum(b.duration for b in blocks if b.id not in fixed))
+            bounds = {b.id: (fixed[b.id][0],) * 2 if b.id in fixed else (state.now, horizon)
+                  for b in blocks}
+        self.start = {b.id: self.m.NewIntVar(*bounds[b.id], f"s[{b.id}]") for b in blocks}
+        self.end = {b.id: self.start[b.id] + self.size[b.id] for b in blocks}
         self.x = {(wf.id, var, cand): self.m.NewBoolVar(f"x[{wf.id},{var},{cand}]")
                   for wf in batch.workflows for var, cands in wf.variables.items()
                   for cand in cands}
         for wf in batch.workflows:
             for var, cands in wf.variables.items():
                 self.m.AddExactlyOne(self.x[wf.id, var, c] for c in cands)
+        if state is not None:
+            for wf_id, binds in state.bindings.items():
+                for var, cand in binds.items():
+                    self.m.Add(self.x[wf_id, var, cand] == 1)
         self.horizon = horizon
         self._dependencies()
         self._locks()
@@ -73,10 +100,10 @@ class _Model:
                     if lit is not None and name in concrete:
                         continue      # already locked by the concrete interval
                     groups[name].append(self._interval(
-                        self.start[b.id], self.end[b.id], lit, b.duration, f"{b.id}@{name}"))
+                        self.start[b.id], self.end[b.id], lit, self.size[b.id], f"{b.id}@{name}"))
             for plate in b.plates:
                 groups[plate].append(self._interval(
-                    self.start[b.id], self.end[b.id], None, b.duration, f"{b.id}@{plate}"))
+                    self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{plate}"))
         for ivs in groups.values():
             self.m.AddNoOverlap(ivs)
 
@@ -144,19 +171,36 @@ class _Model:
         for (wf, var, cand), lit in self.x.items():
             self.m.AddHint(lit, g.bindings.get(wf, {}).get(var) == cand)
 
+    def hint_starts(self, starts: dict[str, int]):
+        for bid, s in starts.items():
+            if bid in self.start:
+                self.m.AddHint(self.start[bid], s)
+
 
 def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
-               time_limit: float = 30.0, hint: bool = True) -> Plan:
+               time_limit: float = 30.0, hint: bool = True, state: ReplanState | None = None,
+               deterministic: bool = False) -> Plan:
     """Solve the batch with CP-SAT; status "optimal", "feasible", "infeasible" (proven), or
-    "no_solution" (time limit / unknown). An invalid model is a bug and raises RuntimeError."""
+    "no_solution" (time limit / unknown). An invalid model is a bug and raises RuntimeError.
+
+    `state` re-plans from the current time: fixed blocks keep their actual (start, end),
+    the rest start at or after `state.now`. `deterministic` uses one worker, a fixed seed
+    and a deterministic-time limit (`time_limit`) instead of wall time."""
     t0 = time.perf_counter()
-    model = _Model(batch)
+    model = _Model(batch, state)
     model.objective(objective)
-    if hint:
+    if state is not None and state.hint:
+        model.hint_starts(state.hint)
+    elif hint:
         model.hint()
     solver = cp_model.CpSolver()
-    solver.parameters.num_workers = 8
-    solver.parameters.max_time_in_seconds = time_limit
+    if deterministic:
+        solver.parameters.num_workers = 1
+        solver.parameters.random_seed = 0
+        solver.parameters.max_deterministic_time = time_limit
+    else:
+        solver.parameters.num_workers = 8
+        solver.parameters.max_time_in_seconds = time_limit
     code = solver.Solve(model.m)
     raw = solver.StatusName(code)
     if code not in _STATUS:
