@@ -8,8 +8,11 @@ dependencies = ["ortools", "pyyaml", "pygments"]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["workcell"]
+[tool.setuptools.packages.find]
+include = ["workcell*"]
+
+[tool.setuptools.package-data]
+"workcell.report" = ["*.js", "*.css", "*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
