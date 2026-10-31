@@ -25,18 +25,18 @@ The report opens on the best run (shortest makespan among runs where every workf
 ```
 seed: 0
 planning: grid 10s, window 4 h
-planned makespan: 7:39:40
-actual makespan:  9:18:08
-re-plans: 3 (0 adopted, 3 not worth it, 0 failed)
-idle hold: limit 300s, parks 15, violations 1 (worst 328s)
+planned makespan: — (rolling window)
+actual makespan:  7:57:50
+re-plans: 6 (3 adopted, 3 not worth it, 0 failed)
+idle hold: limit 300s, parks 15, violations 2 (worst 325s)
 completed: 10/10
 ```
 
 **Idle hold.** No instrument may sit idle holding a plate for more than 5 minutes (`--max-idle-hold SECONDS`, `0` disables). The planner sees long waits coming and parks the plate right away in the hotel (deck positions: only the arm move) or storage (a machine: 60 s to store or retrieve), then brings it back when its next stop is free; short waits stay put. During the run, like a lab tech, the executor moves a plate to the hotel when it has waited almost the limit and its next move still hasn't started (e.g. behind a thermocycler running long). Waits that still go over (mostly by seconds, from step-time noise) are counted in the report.
 
-Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 8), `--replan-time-limit` (per re-plan phase, default 0.5), `--grid SECONDS` (plan in N-second units, default 10), `--window-hours H` (plan this far ahead and extend as the run goes, default 4; 0 = whole batch), `--noise`, `--delay-prob`. Budgets are CP-SAT deterministic time, which runs ~2–5× slower than wall seconds. With the defaults the run takes ~40 s; a bigger initial budget plans this batch better (`--time-limit 30`: planned ~6 h).
+Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 8), `--replan-time-limit` (per re-plan phase, default 0.5), `--grid SECONDS` (plan in N-second units, default 10), `--window-hours H` (plan this far ahead and extend as the run goes, default 4; 0 = whole batch), `--noise`, `--delay-prob`. Budgets are CP-SAT deterministic time, which runs ~2–5× slower than wall seconds. With the defaults the run takes under a minute.
 
-**Planning speed.** CP-SAT plans on a 10 s grid (durations rounded up, execution in real seconds) and only 4 h ahead, extending the plan every 2 h; solves run in one long-lived solver process (crash-isolated). Together these cut the demos below from 4–7 min to 40–130 s at similar quality. `tools/bench_mini.py` runs small scheduler experiments in seconds.
+**Planning speed.** CP-SAT plans on a 10 s grid (durations rounded up, execution in real seconds) and only 4 h ahead, extending the plan every 2 h; solves run in one long-lived solver process (crash-isolated). Together these cut the demos below from 4–7 min to about 1 min at similar quality. `tools/bench_mini.py` runs small scheduler experiments in seconds.
 
 
 ## Demo: library prep + hybrid capture, three batches
@@ -49,9 +49,9 @@ Example report (opens in the browser): https://jared-maguire.github.io/workcell_
 ```
 planning: grid 10s, window 4 h
 planned makespan: — (rolling window)
-actual makespan:  12:12:35
-re-plans: 20 (13 adopted, 7 not worth it, 0 failed)
-idle hold: limit 300s, parks 15, violations 1 (worst 391s)
+actual makespan:  11:55:18
+re-plans: 10 (9 adopted, 0 not worth it, 1 failed)
+idle hold: limit 300s, parks 12, violations 1 (worst 344s)
 completed: 3/3
 ```
 
@@ -67,13 +67,13 @@ Arms can each reach their own instruments and pass plates through handoff spots 
 ```
 planning: grid 10s, window 4 h
 planned makespan: — (rolling window)
-actual makespan:  12:22:35
-re-plans: 17 (14 adopted, 2 not worth it, 1 failed)
-idle hold: limit 300s, parks 14, violations 0 (worst 0s)
+actual makespan:  12:34:25
+re-plans: 12 (9 adopted, 3 not worth it, 0 failed)
+idle hold: limit 300s, parks 14, violations 1 (worst 317s)
 completed: 3/3
 ```
 
-At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. Each demo run takes about 2 minutes. Report: `docs/reports/libprep3_2arm_live.html`.
+At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. Each demo run takes under 2 minutes. Report: `docs/reports/libprep3_2arm_live.html`.
 
 ## Quickstart
 
