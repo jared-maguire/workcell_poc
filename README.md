@@ -35,6 +35,24 @@ completed: 10/10
 
 Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 30), `--replan-time-limit` (per re-plan phase, default 2), `--noise`, `--delay-prob`.
 
+
+## Demo: library prep + hybrid capture, three batches
+
+`examples/libprep_capture.py` takes a 96-sample gDNA plate through Illumina DNA Prep library prep, IDT xGen hybridization capture, and consolidation into a single well for the sequencer: 30 steps with real durations (tagmentation, bead cleanups, indexing PCR, pooling 8 libraries per capture, dry-down, 4 h hybridization, streptavidin capture, washes, post-capture PCR, QC reads, consolidation). `examples/libprep_workcell.yaml` adds a liquid handler with on-deck magnet (×2), heated shakers (×2), sealer, peeler, centrifuge, plate reader and vacuum concentrator to the arm, storage, hotel, scanner, stamper and three thermocyclers. Workflows use `w.step(instrument_type, op, plate[, dst], seconds=...)` for these instruments. Design: `docs/superpowers/specs/2026-10-31-libprep-capture-design.md`.
+
+```
+.venv/bin/python -m workcell live examples/libprep_workcell.yaml examples/libprep_capture.py --seed 0 --time-limit 60
+```
+```
+planned makespan: 11:19:41
+actual makespan:  12:10:24
+re-plans: 15 (11 adopted, 4 not worth it, 0 failed)
+idle hold: limit 300s, parks 17, violations 3 (worst 714s)
+completed: 3/3
+```
+
+One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html (once merged to master).
+
 ## Quickstart
 
 ```

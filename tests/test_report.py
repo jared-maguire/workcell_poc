@@ -102,3 +102,10 @@ def test_live_report_data(workcell_small):
 
 def test_v1_report_has_no_live(session):
     assert data_of(build_report(session))["live"] is None
+
+
+def test_new_instrument_type_labels(session):
+    html = build_report(session)
+    assert all(label in html for label in
+               ('liquid_handler: "liquid handler"', 'vacuum_concentrator: "concentrator"',
+                'liquid_handler: "#d4a72c"'))

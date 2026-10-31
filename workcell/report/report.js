@@ -13,10 +13,16 @@
   const TYPE_COLOR = {
     arm: "#e08a2e", storage: "#7d9440", hotel: "#8b6cc4",
     barcode_scanner: "#c05299", head_stamper: "#3b7dd8", thermocycler: "#1f9e89",
+    liquid_handler: "#d4a72c", heated_shaker: "#c9503e", plate_sealer: "#5f7a8a",
+    plate_peeler: "#8a9aa5", centrifuge: "#6d5bd0", plate_reader: "#2a9bc4",
+    vacuum_concentrator: "#9c6b3f",
   };
   const TYPE_LABEL = {
     arm: "arm", storage: "storage", hotel: "hotel", barcode_scanner: "scanner",
     head_stamper: "stamper", thermocycler: "thermocycler",
+    liquid_handler: "liquid handler", heated_shaker: "shaker", plate_sealer: "sealer",
+    plate_peeler: "peeler", centrifuge: "centrifuge", plate_reader: "plate reader",
+    vacuum_concentrator: "concentrator",
   };
   // Badges say what happened to the run; the planner's own status lives in the tooltip and stats table.
   const STATUS_LABEL = {
