@@ -51,7 +51,24 @@ idle hold: limit 300s, parks 17, violations 3 (worst 714s)
 completed: 3/3
 ```
 
-One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html (once merged to master).
+One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h.
+
+### Two arms
+
+Arms can each reach their own instruments and pass plates through handoff spots (`reach:` lists and `type: handoff` in the workcell file; only handoffs may be shared). A move between zones is relayed through a handoff in one step; the planner may use any instrument and sees each choice's route. `examples/libprep_2arm.yaml` splits the demo into a library-prep zone (arm1) and a capture zone (arm2) with one handoff spot; sealer, peeler and centrifuge exist once (plates cross over), plate readers once per zone. Design: `docs/superpowers/specs/2026-10-31-multi-arm-design.md`.
+
+```
+.venv/bin/python -m workcell live examples/libprep_2arm.yaml examples/libprep_capture.py --seed 0 --time-limit 120
+```
+```
+planned makespan: 11:21:14
+actual makespan:  12:13:40
+re-plans: 21 (18 adopted, 3 not worth it, 0 failed)
+idle hold: limit 300s, parks 16, violations 6 (worst 324s)
+completed: 3/3
+```
+
+At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. The two-arm model is harder for CP-SAT, so it gets a longer budget (`--time-limit 120`, ~7 min). Report: `docs/reports/libprep3_2arm_live.html`. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html (once merged to master).
 
 ## Quickstart
 

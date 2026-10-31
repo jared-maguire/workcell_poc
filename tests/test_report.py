@@ -108,4 +108,4 @@ def test_new_instrument_type_labels(session):
     html = build_report(session)
     assert all(label in html for label in
                ('liquid_handler: "liquid handler"', 'vacuum_concentrator: "concentrator"',
-                'liquid_handler: "#d4a72c"'))
+                'liquid_handler: "#d4a72c"', 'handoff: "handoff"'))
