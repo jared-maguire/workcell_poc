@@ -17,12 +17,72 @@ def _overlaps(intervals):
             latest = (e, i)
 
 
+def _is_park(block) -> bool:
+    return block.inserted and block.kind == "park"
+
+
+def _compare(plan: Plan, batch: CompiledBatch, bid: str) -> list[str]:
+    """Check one plan block against its compiled block bound under the plan's bindings."""
+    comp, got = batch.block(bid), plan.blocks[bid]
+    try:
+        want = comp.bind(plan.bindings.get(comp.workflow, {}))
+    except KeyError as e:
+        return [f"block {bid} uses unbound variable {e.args[0]}"]
+    errs = []
+    if (got.kind, got.workflow, got.plates) != (want.kind, want.workflow, want.plates):
+        errs.append(f"block {bid} differs from compiled kind/workflow/plates")
+    missing = [d for d in want.deps if d not in got.deps]
+    if missing:
+        errs.append(f"block {bid} lost compiled dependencies {missing}")
+    parked = {p for d in got.deps if d in plan.blocks and _is_park(plan.blocks[d])
+              for p in plan.blocks[d].plates}
+    if len(got.moves) != len(want.moves) or any(
+            g.plate != w.plate or g.dst != w.dst or (g.src != w.src and w.plate not in parked)
+            for g, w in zip(got.moves, want.moves)):
+        errs.append(f"block {bid} moves differ from compiled moves")
+    if want.kind in ("op", "scan") and got.instructions != want.instructions:
+        errs.append(f"block {bid} instructions differ from compiled instructions")
+    return errs
+
+
 def validate_plan(plan: Plan, batch: CompiledBatch) -> list[str]:
     errors: list[str] = []
+    compiled = {b.id for b in batch.all_blocks()}
     scheduled = [b for b in plan.start if b in plan.blocks]
     for bid in plan.start:
-        if bid not in plan.blocks:
-            errors.append(f"block {bid} is scheduled but has no bound block")
+        if bid not in plan.blocks or (bid not in compiled and not _is_park(plan.blocks[bid])):
+            errors.append(f"unknown block {bid} is scheduled")
+        if plan.start[bid] < 0:
+            errors.append(f"block {bid} has negative start {plan.start[bid]}")
+    for bid, blk in plan.blocks.items():
+        if bid not in compiled and not _is_park(blk):
+            errors.append(f"block {bid} is not compiled and is not an inserted park block")
+
+    # bindings must name real candidates
+    workflows = {wf.id: wf for wf in batch.workflows}
+    for wf_id, binding in plan.bindings.items():
+        wf = workflows.get(wf_id)
+        if wf is None:
+            errors.append(f"binding for unknown workflow {wf_id}")
+            continue
+        for var, target in binding.items():
+            if var not in wf.variables:
+                errors.append(f"workflow {wf_id} has no variable {var}")
+            elif target not in wf.variables[var]:
+                errors.append(f"binding {var}={target} in {wf_id} is not one of {wf.variables[var]}")
+
+    # plan blocks must match the compiled blocks
+    for bid in plan.blocks:
+        if bid in compiled:
+            errors += _compare(plan, batch, bid)
+
+    # moves must use real nests
+    nests = batch.workcell.nests()
+    for bid in scheduled:
+        for m in plan.blocks[bid].moves:
+            for nest in (m.src, m.dst):
+                if not nest.startswith("?") and nest not in nests:
+                    errors.append(f"block {bid} moves {m.plate} via unknown nest {nest}")
 
     # unresolved variables
     for bid in scheduled:
@@ -74,7 +134,6 @@ def validate_plan(plan: Plan, batch: CompiledBatch) -> list[str]:
             here = m.dst
 
     # nest capacity
-    nests = batch.workcell.nests()
     by_nest = defaultdict(list)
     for plate, nest, arrive, leave in plate_stays(plan, initial):
         if leave is None or arrive < leave:

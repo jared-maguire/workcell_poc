@@ -55,6 +55,8 @@ def plate_stays(plan: Plan, initial: dict[str, str]) -> list[tuple[str, str, int
     """(plate, nest, arrive, leave) stays: from the START of the placing block to the START of the removing block (initial from 0); leave is None while still there."""
     moves: dict[str, list[tuple[int, str, str]]] = {}
     for bid in plan.start:
+        if bid not in plan.blocks:
+            continue
         for m in plan.blocks[bid].moves:
             moves.setdefault(m.plate, []).append((plan.start[bid], bid, m.dst))
     stays = []
