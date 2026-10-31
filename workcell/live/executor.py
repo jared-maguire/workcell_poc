@@ -60,7 +60,7 @@ def _excess(gaps, limit: int | None) -> int:
 
 def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
                  replan: Callable[[ReplanState], Plan], threshold: int,
-                 max_idle_hold: int | None = None) -> LiveResult:
+                 max_idle_hold: int | None = None, window: int | None = None) -> LiveResult:
     """Run `plan` with actual durations from `noise`. A block starts once its planned start has
     passed, its plan-order predecessors allow it (see order.plan_preds) and its locks are
     free. When any block finishes, project the rest (running blocks end no earlier than now,
@@ -169,9 +169,16 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
     def gaps(blks: dict[str, Block], starts: dict[str, int], ends: dict[str, int]):
         return idle_gaps(blks, starts, ends, batch) if max_idle_hold else []
 
-    def check_delay(trigger: str, t: int) -> None:
-        nonlocal plan, preds, start_at
-        if not pending:
+    # rolling horizon: `plan` may cover only a window; extend it every window / 2
+    next_extend = window // 2 if window else None
+    failed_extends = 0
+
+    def unplanned() -> bool:
+        return any(b not in plan.start and b not in started for b in compiled)
+
+    def check_delay(trigger: str | None, t: int, force: bool = False) -> None:
+        nonlocal plan, preds, start_at, next_extend, failed_extends
+        if not pending and not force:
             return
         base = shifted()
         actual_end = dict(ended)
@@ -189,9 +196,9 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
             if g.length > max_idle_hold}
         new_idle = [g for g in now_gaps if g.length > max_idle_hold
                     and (g.plate, g.prev, g.next) not in was]
-        if push <= threshold and not new_idle:
+        if push <= threshold and not new_idle and not force:
             return
-        reason = "idle_hold" if new_idle else "delay"
+        reason = "idle_hold" if new_idle else "horizon" if force else "delay"
         # started park blocks and their rewritten removals are given to the re-plan as is,
         # with the removal's instrument choices kept
         given = {}
@@ -224,8 +231,13 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
                 {**blocks, **{b: new.blocks[b] for b in rest}},
                 {**done, **{b: new.start[b] for b in rest}},
                 {**done_end, **{b: new.end(b) for b in rest}}), max_idle_hold)
-        adopt = after is not None and (before - after >= threshold or (
+        adopt = after is not None and (force or before - after >= threshold or (
             reason == "idle_hold" and idle_after < idle_before))
+        if window and (adopt or force):
+            next_extend = t + window // 2
+            failed_extends = 0 if adopt else failed_extends + 1
+            if failed_extends >= 3:
+                raise RuntimeError(f"could not extend the plan at t={t} (3 failed re-plans)")
         reassigned = 0
         if adopt:
             reassigned = sum(new.bindings[wf].get(v) != c
@@ -248,7 +260,7 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         # (its lateness shows up in the projection as soon as any other block finishes).
         late, delay = max(((bid, (ended.get(bid, t) - s) - blocks[bid].duration)
                            for bid, s in sorted(started.items())),
-                          key=lambda x: (x[1], x[0] == trigger))
+                          key=lambda x: (x[1], x[0] == trigger), default=("", 0))
         result.replans.append(ReplanEvent(
             time=t, trigger=late, delay=delay, push=push,
             pushed_block=who, solve_seconds=solve,
@@ -271,11 +283,16 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
     while True:
         candidates = [h[0] for h in heap[:1]]
         candidates += [start_at[b] for b in pending if start_at[b] > now]
+        extend = window and unplanned()
+        if extend:
+            candidates.append(max(next_extend, now + 1))
         if not candidates:
             break
         if removals:
             candidates += [dl for dl, _ in waiting(now) if dl > now]
         t = now = min(candidates)
+        if extend and t >= next_extend:
+            check_delay(None, t, force=True)
         while True:
             while heap and heap[0][0] == t and heap[0][1] == _RELEASE:
                 _, _, _, _, bid = heapq.heappop(heap)
