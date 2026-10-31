@@ -15,6 +15,23 @@ A simulation playground for scheduling plate-handling workflows (such as PCR) on
 
 The report opens on the best run (shortest makespan among runs where every workflow finished).
 
+## v2: live re-planning
+
+`live` runs a batch the way a lab would: each step has a realistic time in seconds (set in the workflow with `@workflow(times=...)` and `seconds=`), actual times vary randomly (seeded), and the system re-plans with CP-SAT when a delay would push a later step back by more than the threshold (5 min). A re-plan keeps churn low: it holds the best finish time it can find while changing as little as possible, and it is adopted only if it finishes at least the threshold sooner than just letting everything slide. Same seed, same run.
+
+```
+.venv/bin/python -m workcell live examples/workcell.yaml examples/pcr_live.py --seed 0 --out out/live.html
+```
+```
+seed: 0
+planned makespan: 5:56:53
+actual makespan:  7:40:17
+re-plans: 1 (1 adopted, 0 not worth it, 0 failed)
+completed: 10/10
+```
+
+Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 30), `--replan-time-limit` (per re-plan phase, default 2), `--noise`, `--delay-prob`.
+
 ## Quickstart
 
 ```

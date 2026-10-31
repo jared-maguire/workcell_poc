@@ -6,9 +6,12 @@ Simulation playground for lab workcell control software: a workflow DSL is compi
 
 ```
 python -m venv .venv && .venv/bin/pip install -e .     # Python 3.12+; ortools, pyyaml, pygments, pytest
-.venv/bin/pytest -q                                     # full suite, ~50 s (CP-SAT tests dominate)
+.venv/bin/pip install -e '.[dev]'                       # adds pytest, pytest-xdist
+.venv/bin/pytest -q                                     # fast suite, parallel, ~1 min (skips slow)
+.venv/bin/pytest -q -m slow                             # CP-SAT-heavy tests, ~1–2 min
 .venv/bin/python -m workcell run examples/workcell.yaml examples/pcr_batch.py --out out/report.html
 .venv/bin/python -m workcell scale --workflows 100 --time-limit 60 --out out/scale100.html   # ~4 min
+.venv/bin/python -m workcell live examples/workcell.yaml examples/pcr_live.py --seed 0     # v2, ~1 min
 ```
 
 `--mode` is repeatable: `greedy[:round_robin|:fifo]`, `greedy_hotel[:round_robin|:fifo]`, `cpsat[:makespan|:sum_completion]`. Exit code 2 = config/compile/input error; deadlocks and alarms are results (exit 0).
@@ -18,6 +21,13 @@ python -m venv .venv && .venv/bin/pip install -e .     # Python 3.12+; ortools, 
 `config.py` (YAML → `Workcell`) → `dsl.py` + `library.py` (Python workflow functions → `WorkflowSpec`) → `compiler.py` / `ir.py` (→ `CompiledBatch` of `Block` DAGs) → `planners/` (→ `Plan`) → `validate.py` → `sim/executor.py` + `sim/world.py` (→ `Trace`) → `stats.py` → `report/` (single HTML). `run.py` orchestrates; `cli.py` wraps it; `scenarios.py` generates scale workcells.
 
 Planners never touch the simulator or report; a `Plan` (bound blocks + start times + bindings + status) is all downstream code sees.
+
+## v2 live mode (`workcell/live/`, branch v2)
+
+- `noise.py` seeded actual durations (draw depends only on seed, block id, instruction index) · `order.py` plan-order graph (`plan_preds`: deps, per-instrument/plate order, nest handoffs) + `project`/`max_push` · `executor.py` event loop (jumps between events; follows the plan as an order; detects long delays at block finish; adopts a re-plan only if it beats sliding by ≥ threshold, else the projection becomes the new baseline) · `session.py` `run_live`, as-run plan, `LiveStats`.
+- **Times:** integer seconds. Only `@workflow(times=...)` workflows use rules 1–2 (op `seconds=`/thermocycle program sum, then the workflow table); everything else falls back to workcell `durations`, exactly as v1.
+- **CP-SAT in live mode:** `plan_cpsat(..., deterministic=True)` = 8 interleaved workers, seed 0, deterministic-time limit, solved in a child process with retry (OR-Tools 9.15 on Python 3.14 sometimes aborts with heap corruption). Same inputs → same plan, across processes. Initial plan is warm-started with `hint="serial"` (v2 never uses greedy). Re-plans: `replan_cpsat` (phase 1 makespan, phase 2 churn with makespan held).
+- **Validation:** the as-run schedule (actual starts/durations) must pass `validate_plan(asrun, batch, check_durations=False)`. In live mode lock waits are normal (not a bug signal). `Plan.end()` uses planned durations — use actual ends for started blocks.
 
 ## Invariants (break these and the planners, validator, and executor disagree)
 

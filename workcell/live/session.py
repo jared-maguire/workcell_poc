@@ -76,7 +76,7 @@ def _live_stats(batch: CompiledBatch, result: LiveResult, seed: int, threshold: 
 def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
              delay_prob: float = 0.02, delay_range: tuple[float, float] = (2.0, 5.0),
              replan_threshold: int = 300, replan_time_limit: float = 2.0,
-             time_limit: float = 10.0, workcell_source: str = "",
+             time_limit: float = 30.0, workcell_source: str = "",
              batch_source: str = "") -> LiveSession:
     batch = compile_batch(workcell, specs)
     initial = plan_cpsat(batch, time_limit=time_limit, deterministic=True, hint="serial")

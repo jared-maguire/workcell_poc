@@ -11,6 +11,10 @@ Ideas deliberately left out of the current version. Newest at the top of each se
   - New workflow-language needs: many-to-one pooling, reagent plates consumed across steps, steps with time windows (e.g. bead incubations that must not run long).
 - **Timing mode (calibration).** Run a workflow with rough time estimates, benchmark the observed step times, and write the observed times back into the workflow definition. *(Jared, 2026-10-30)*
 
+## Live re-planning (from v2 observations)
+
+- **Detect an overrun while the block is still running.** v2 only notices a delay when the late block finishes; by then a long thermocycle's thermocycler is already free, so re-plans can rarely move queued plates to idle hardware. An "overdue" check at planned end + threshold, with an estimate of the remaining time, would let re-plans use idle instruments while the overrun is happening.
+
 ## Scheduling performance (from v2 observations)
 
 With realistic times (4 s scans next to 4020 s thermocycles; horizon ~44,000 s), CP-SAT cannot find a first feasible plan for 10 PCR workflows unaided; with a serial warm start it reaches 21,413 s against a ~20,100 s thermocycler lower bound.
