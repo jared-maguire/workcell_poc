@@ -85,7 +85,7 @@ button, select { font: inherit; color: inherit; }
   color: #fff; background: var(--muted);
 }
 .badge.complete, .badge.optimal { background: var(--green); }
-.badge.feasible { background: var(--amber); }
+.badge.feasible { background: var(--green); }
 .badge.deadlock, .badge.alarm { background: var(--red); }
 .badge.no_solution, .badge.infeasible { background: var(--muted); }
 .badge.incomplete { background: var(--amber); }

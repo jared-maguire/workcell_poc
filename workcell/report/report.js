@@ -18,8 +18,24 @@
     arm: "arm", storage: "storage", hotel: "hotel", barcode_scanner: "scanner",
     head_stamper: "stamper", thermocycler: "thermocycler",
   };
+  // Badges say what happened to the run; the planner's own status lives in the tooltip and stats table.
   const STATUS_LABEL = {
-    complete: "complete", optimal: "optimal", feasible: "feasible",
+    complete: "done", optimal: "done · optimal", feasible: "done",
+    deadlock: "deadlock", no_solution: "no plan found", infeasible: "no plan possible", alarm: "stopped: alarm",
+    incomplete: "incomplete",
+  };
+  const STATUS_HINT = {
+    complete: "All workflows finished. Greedy planners make no claim about how good the plan is.",
+    optimal: "All workflows finished, and CP-SAT proved no shorter plan exists.",
+    feasible: "All workflows finished. CP-SAT found this plan but hit its time limit before proving it is the best.",
+    deadlock: "Planning stopped: workflows ended up waiting on each other and nothing could move.",
+    no_solution: "CP-SAT found no plan within its time limit.",
+    infeasible: "CP-SAT proved no valid plan exists.",
+    alarm: "Execution stopped on an instrument alarm.",
+    incomplete: "Some scheduled steps never finished.",
+  };
+  const SOLVER_LABEL = {
+    complete: "— (greedy)", optimal: "optimal (proven best)", feasible: "feasible (not proven best)",
     deadlock: "deadlock", no_solution: "no solution", infeasible: "infeasible", alarm: "alarm",
     incomplete: "incomplete",
   };
@@ -71,7 +87,7 @@
     return `<li class="${i.duration ? "" : "zero"}">${esc(i.instrument)}.<span class="op">${esc(i.op)}</span>(${args}) <span class="d">${i.duration}m</span></li>`;
   }
   const fmtNum = (v, d) => (v === null || v === undefined ? "—" : (d ? Number(v).toFixed(d) : String(v)));
-  const badge = s => `<span class="badge ${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
+  const badge = s => `<span class="badge ${esc(s)}" title="${esc(STATUS_HINT[s] || s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
   const pct = (x, T) => (100 * x / T) + "%";
   function niceStep(raw) {
     const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1e-9))));
@@ -156,7 +172,7 @@
       ["waiting (total)", r => (r.stats.total_waiting === null ? "—" : `${r.stats.total_waiting} min`)],
       ["waiting (mean)", r => (r.stats.mean_waiting === null ? "—" : `${fmtNum(r.stats.mean_waiting, 1)} min`)],
       ["blocked (total)", r => `${Object.values(r.stats.blocked || {}).reduce((a, b) => a + b, 0)} min`],
-      ["solver status", r => esc(STATUS_LABEL[r.status] || r.status)],
+      ["planner status", r => esc(SOLVER_LABEL[r.status] || r.status)],
       ["solve time", r => `${Number(r.stats.solve_seconds).toFixed(2)} s`],
       ["lock waits", r => String(r.stats.lock_waits)],
       ["alarm", r => (r.stats.alarm ? esc(r.stats.alarm) : "—")],
@@ -692,5 +708,16 @@
   buildFloor();
   renderCompiled();
   showSource("workflows");
-  setRun(0);
+  // Open on the best run: among runs where every workflow finished, the shortest makespan,
+  // then the lowest mean completion time, then the earliest tab.
+  function bestRun() {
+    let best = 0, key = null;
+    D.runs.forEach((r, i) => {
+      if (!FINISHED.has(statusOf(r)) || r.stats.completed !== r.stats.total) return;
+      const k = [r.stats.makespan, r.stats.mean_completion ?? Infinity];
+      if (key === null || k[0] < key[0] || (k[0] === key[0] && k[1] < key[1])) { best = i; key = k; }
+    });
+    return best;
+  }
+  setRun(bestRun());
 })();
