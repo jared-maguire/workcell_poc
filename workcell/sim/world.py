@@ -1,7 +1,7 @@
 """Simulated instruments: a World that applies instructions and rejects illegal ones."""
 from __future__ import annotations
 
-from workcell.config import Workcell
+from workcell.config import STEP_TYPES, Workcell
 from workcell.ir import Instruction
 
 
@@ -27,6 +27,7 @@ class World:
             "barcode_scanner": self._scanner,
             "head_stamper": self._stamper,
             "thermocycler": self._thermocycler,
+            **{t: self._step for t in STEP_TYPES},
         }
 
     # --- queries ---
@@ -135,6 +136,13 @@ class World:
             nest = f"{instr.instrument}.{key}"
             if self._loc.get(instr.args[key]) != nest:
                 raise self._err(instr, f"plate {instr.args[key]} not in {nest}")
+
+    # --- generic lab steps ---
+    def _step(self, instr: Instruction) -> None:
+        here = [n for n in self._nests if self.workcell.nest_owner(n) == instr.instrument]
+        for plate in instr.args.get("plates", []):
+            if self._loc.get(plate) not in here:
+                raise self._err(instr, f"plate {plate} not in {instr.instrument}")
 
     # --- thermocycler ---
     def _thermocycler(self, instr: Instruction) -> None:

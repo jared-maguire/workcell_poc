@@ -79,3 +79,15 @@ def test_load_workcell_malformed_yaml(tmp_path):
     (tmp_path / "w.yaml").write_text("instruments: [unclosed")
     with pytest.raises(ConfigError, match="w.yaml"):
         load_workcell(tmp_path / "w.yaml")
+
+
+def test_new_type_nests():
+    wc = parse_workcell({**SMALL, "instruments": SMALL["instruments"] + [
+        {"id": "lh1", "type": "liquid_handler"}, {"id": "hs1", "type": "heated_shaker"},
+        {"id": "seal1", "type": "plate_sealer"}, {"id": "peel1", "type": "plate_peeler"},
+        {"id": "spin1", "type": "centrifuge"}, {"id": "read1", "type": "plate_reader"},
+        {"id": "dry1", "type": "vacuum_concentrator"}]})
+    n = wc.nests()
+    assert (n["lh1.src"].capacity, n["lh1.dst"].capacity, n["hs1"].capacity) == (1, 1, 1)
+    assert all(n[i].capacity == 1 for i in ("seal1", "peel1", "spin1", "read1", "dry1"))
+    assert "lh1" not in n

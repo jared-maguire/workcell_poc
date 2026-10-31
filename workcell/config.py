@@ -6,8 +6,13 @@ from pathlib import Path
 
 import yaml
 
+# Lab instruments that run generic timed steps (`w.step`): the plate(s) must be in their nests.
+STEP_TYPES = frozenset({"liquid_handler", "heated_shaker", "plate_sealer", "plate_peeler",
+                        "centrifuge", "plate_reader", "vacuum_concentrator"})
+# Instrument types with two plate positions, `<id>.src` and `<id>.dst`.
+TWO_POSITION_TYPES = frozenset({"head_stamper", "liquid_handler"})
 INSTRUMENT_TYPES = frozenset(
-    {"arm", "storage", "hotel", "barcode_scanner", "head_stamper", "thermocycler"}
+    {"arm", "storage", "hotel", "barcode_scanner", "head_stamper", "thermocycler"} | STEP_TYPES
 )
 
 
@@ -65,7 +70,7 @@ class Workcell:
                 if slots is None:
                     slots = UNLIMITED_HOTEL_SLOTS if inst.type == "hotel" else 1
                 out[inst.id] = Nest(inst.id, inst.id, slots)
-            elif inst.type == "head_stamper":
+            elif inst.type in TWO_POSITION_TYPES:
                 for suffix in ("src", "dst"):
                     nid = f"{inst.id}.{suffix}"
                     out[nid] = Nest(nid, inst.id, 1)
