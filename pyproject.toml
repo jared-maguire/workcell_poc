@@ -1,0 +1,15 @@
+[project]
+name = "workcell"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["ortools", "pyyaml", "pygments"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["workcell"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
