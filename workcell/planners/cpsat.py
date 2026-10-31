@@ -106,11 +106,13 @@ def serial_hint(batch: CompiledBatch) -> tuple[dict[str, int], dict[str, dict[st
 
 class _Model:
     def __init__(self, batch: CompiledBatch, state: ReplanState | None = None,
-                 max_idle_hold: int | None = None, soft: bool = False):
+                 max_idle_hold: int | None = None, soft: bool = False, grid: int = 1):
         self.batch = batch
         self.m = cp_model.CpModel()
+        self.g = grid       # seconds per model time unit: durations round up, fixed times down
         blocks = batch.all_blocks()
-        fixed = state.fixed if state else {}
+        fixed = ({b: (s // grid, e // grid) for b, (s, e) in state.fixed.items()}
+                 if state else {})
         self.state, self.limit, self.soft = state, max_idle_hold or None, soft
         self.over = dict(state.blocks) if state else {}
         # idle hold: one stay per chain; its removal may be parked at any spot
@@ -123,7 +125,7 @@ class _Model:
                 continue            # route depends on a binding (spec), or already parked
             try:
                 for sp in self.spots:
-                    self.pdur[d, sp] = park_durations(batch, batch.block(d), sp)
+                    self.pdur[d, sp] = tuple(map(self.q, park_durations(batch, batch.block(d), sp)))
             except AmbiguousRoute:
                 for sp in self.spots:
                     self.pdur.pop((d, sp), None)
@@ -131,16 +133,19 @@ class _Model:
                     for d in self.removals)
         # interval size per block: actual (end - start) for fixed blocks, else planned duration
         self.size = {b.id: fixed[b.id][1] - fixed[b.id][0] if b.id in fixed
-                     else self.over[b.id].duration if b.id in self.over else b.duration
+                     else self.q(self.over[b.id].duration) if b.id in self.over
+                     else self.q(b.duration)
                      for b in blocks}
         if state is None:
-            horizon = sum(_longest(b) for b in blocks) + extra
+            horizon = sum(self.q(_longest(b)) for b in blocks) + extra
             bounds = {b.id: (0, horizon) for b in blocks}
         else:
-            horizon = (max([state.now] + [e for _, e in fixed.values()])
-                       + sum(_longest(b) for b in blocks if b.id not in fixed) + extra)
-            bounds = {b.id: (fixed[b.id][0],) * 2 if b.id in fixed else (state.now, horizon)
+            now = self.q(state.now)
+            horizon = (max([now] + [e for _, e in fixed.values()])
+                       + sum(self.q(_longest(b)) for b in blocks if b.id not in fixed) + extra)
+            bounds = {b.id: (fixed[b.id][0],) * 2 if b.id in fixed else (now, horizon)
                   for b in blocks}
+        self.fixed = fixed
         self.start = {b.id: self.m.NewIntVar(*bounds[b.id], f"s[{b.id}]") for b in blocks}
         self.end = {b.id: self.start[b.id] + self.size[b.id] for b in blocks}
         self.x = {(wf.id, var, cand): self.m.NewBoolVar(f"x[{wf.id},{var},{cand}]")
@@ -162,6 +167,10 @@ class _Model:
         self._borrows()
         self._gaps()
 
+    def q(self, seconds: int) -> int:
+        """Seconds -> model units, rounded up (durations, `now`)."""
+        return -(-seconds // self.g)
+
     def _variants(self, fixed):
         """Route-variant blocks: one literal per variant (its bindings), and a size that is
         the chosen variant's duration (actual size when fixed)."""
@@ -180,7 +189,7 @@ class _Model:
             if b.id in fixed:
                 continue
             sz = self.m.NewIntVar(0, 2 * self.horizon, f"size[{b.id}]")
-            self.m.Add(sz == sum(sum(i.duration for i in b.variants[k]) * lit
+            self.m.Add(sz == sum(self.q(sum(i.duration for i in b.variants[k])) * lit
                                  for k, lit in lits.items()))
             end = self.m.NewIntVar(0, 2 * self.horizon, f"end[{b.id}]")
             self.m.Add(end == self.start[b.id] + sz)
@@ -198,7 +207,7 @@ class _Model:
         (the park start if parked, else D's start). Started removals and parks are forced
         by `state.parks` (a started removal with no entry stays direct)."""
         m, big = self.m, 2 * self.horizon
-        now = self.state.now if self.state else 0
+        now = self.q(self.state.now) if self.state else 0
         forced = self.state.parks if self.state else {}
         self.park, self.parked, self.leave = {}, {}, {}
         self.kstart, self.ksize, self.kend = {}, {}, {}
@@ -206,7 +215,7 @@ class _Model:
             k = f"{d}.park"
             if d in self.over and k in fixed:       # parked already: it left at the park start
                 self.park[d], self.leave[d] = {}, m.NewConstant(fixed[k][0])
-                m.Add(self.start[d] >= fixed[k][1])
+                m.Add(self.start[d] >= self.q(self.state.fixed[k][1]))
                 continue
             lits = {sp: m.NewBoolVar(f"park[{d},{sp}]") for sp in self.spots
                     if (d, sp) in self.pdur}
@@ -261,12 +270,14 @@ class _Model:
                 self.m.Add(nxt >= self.end[a])
                 gap = nxt - self.end[a]
                 self.gaps.append(gap)
+                # in grid units, a real gap can exceed the model's by up to grid - 1 s
+                limit = (self.limit - self.g + 1) // self.g if self.g > 1 else self.limit
                 if self.soft:
                     ex = self.m.NewIntVar(0, 2 * self.horizon, f"excess[{a}>{b}]")
-                    self.m.Add(ex >= gap - self.limit)
+                    self.m.Add(ex >= gap - limit)
                     self.excess.append(ex)
                 else:
-                    self.m.Add(gap <= self.limit)
+                    self.m.Add(gap <= limit)
 
     def _choices(self, wf_id: str, name: str):
         """Yield (concrete name, presence literal or None) for each way `name` can resolve."""
@@ -295,7 +306,7 @@ class _Model:
         groups = defaultdict(list)
         for bid, blk in sorted(self.over.items()):  # given blocks: their own instruments
             if bid not in self.start:               # a started park block (not compiled)
-                s, e = self.state.fixed[bid]
+                s, e = self.fixed[bid]
                 for name in sorted(blk.instruments | blk.plates):
                     groups[name].append(self.m.NewIntervalVar(s, e - s, e, f"{bid}@{name}"))
         for b in self.batch.all_blocks():
@@ -446,8 +457,8 @@ class _Model:
                 terms.append(weight * (1 - lits[want]))
         for bid, h in sorted(state.hint.items()):
             if bid in self.start and bid not in state.fixed:
-                d = self.m.NewIntVar(0, self.horizon, f"dev[{bid}]")
-                self.m.AddAbsEquality(d, self.start[bid] - h)
+                d = self.m.NewIntVar(0, 2 * self.horizon, f"dev[{bid}]")
+                self.m.AddAbsEquality(d, self.start[bid] - h // self.g)
                 terms.append(d)
         self.m.Minimize(sum(terms))
 
@@ -465,9 +476,9 @@ class _Model:
     def hint_starts(self, starts: dict[str, int]):
         for bid, s in starts.items():
             if bid in self.start:
-                self.m.AddHint(self.start[bid], s)
+                self.m.AddHint(self.start[bid], s // self.g)
             elif bid.endswith(".park") and bid[:-len(".park")] in self.kstart:
-                self.m.AddHint(self.kstart[bid[:-len(".park")]], s)
+                self.m.AddHint(self.kstart[bid[:-len(".park")]], s // self.g)
 
     def hint_parks(self, parks: dict[str, str | None]):
         """Hint every park literal: 1 only for the removal's hinted spot."""
@@ -485,7 +496,7 @@ class _Model:
 def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
                time_limit: float = 30.0, hint: Hint | bool | None = True,
                state: ReplanState | None = None, deterministic: bool = False,
-               max_idle_hold: int | None = None) -> Plan:
+               max_idle_hold: int | None = None, grid: int = 1) -> Plan:
     """Solve the batch with CP-SAT; status "optimal", "feasible", "infeasible" (proven), or
     "no_solution" (time limit / unknown). An invalid model is a bug and raises RuntimeError.
 
@@ -499,7 +510,7 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     solver_status "CRASHED" if every attempt does. `max_idle_hold` (seconds) bounds every
     idle-hold gap, parking plates in a hotel or storage where needed."""
     t0 = time.perf_counter()
-    model = _Model(batch, state, max_idle_hold)
+    model = _Model(batch, state, max_idle_hold, grid=grid)
     model.objective(objective)
     if state is not None and (state.hint or state.hint_bindings):
         model.hint_starts(state.hint)
@@ -517,18 +528,20 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
     return _solve_plan(model, time_limit, deterministic, objective, t0)[0]
 
 
-def plan_idle_hold(batch: CompiledBatch, time_limit: float, max_idle_hold: int) -> Plan:
+def plan_idle_hold(batch: CompiledBatch, time_limit: float, max_idle_hold: int,
+                   grid: int = 1) -> Plan:
     """Initial live plan under an idle-hold limit, in two deterministic stages of half the
     budget each: solve without the limit (serial warm start), then with the hard limit warm-
     started from that plan (a cold start rarely improves on the serial plan). If the hard
     stage finds nothing, the soft limit (always solvable) is used instead.
     solver_status is "<stage 1>/<stage 2>"."""
     t0 = time.perf_counter()
-    first = plan_cpsat(batch, time_limit=time_limit / 2, deterministic=True, hint="serial")
+    first = plan_cpsat(batch, time_limit=time_limit / 2, deterministic=True, hint="serial",
+                       grid=grid)
     if not first.finished:
         return first
     for soft in (False, True):
-        m = _Model(batch, None, max_idle_hold, soft=soft)
+        m = _Model(batch, None, max_idle_hold, soft=soft, grid=grid)
         m.objective("makespan")
         m.hint_starts(first.start)
         m.hint_bindings(first.bindings)
@@ -542,7 +555,8 @@ def plan_idle_hold(batch: CompiledBatch, time_limit: float, max_idle_hold: int) 
 
 
 def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2.0,
-                 reassign_weight: int = 600, max_idle_hold: int | None = None) -> Plan:
+                 reassign_weight: int = 600, max_idle_hold: int | None = None,
+                 grid: int = 1) -> Plan:
     """Ruling R8: a low-churn re-plan. Phase 1 minimizes makespan from `state`; phase 2 holds
     that makespan and minimizes churn against `state.hint`/`state.hint_bindings` (see
     `_Model.churn_objective`). Both are deterministic and isolated, each with `time_limit`.
@@ -550,7 +564,7 @@ def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2
     With `max_idle_hold` the limit is soft (spec): phase 1 minimizes the total excess over it
     first, phase 2 holds that excess too, and park decisions count as churn."""
     t0 = time.perf_counter()
-    m1 = _Model(batch, state, max_idle_hold, soft=True)
+    m1 = _Model(batch, state, max_idle_hold, soft=True, grid=grid)
     m1.objective("makespan")
     m1.hint_starts(state.hint)
     m1.hint_bindings(state.hint_bindings)
@@ -558,7 +572,7 @@ def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2
     first, sol1 = _solve_plan(m1, time_limit, True, "makespan", t0)
     if not first.finished:
         return first
-    m2 = _Model(batch, state, max_idle_hold, soft=True)
+    m2 = _Model(batch, state, max_idle_hold, soft=True, grid=grid)
     m2.churn_objective(state, sol1.values[m1.mk.Index()], reassign_weight,
                        sum(sol1.values[e.Index()] for e in m1.excess))
     m2.hint_starts(first.start)
@@ -599,7 +613,9 @@ def _solve_plan(model: _Model, time_limit: float, deterministic: bool, objective
         if sol.values[lit.Index()]:
             bindings[wf][var] = cand
     blocks = bind_batch(batch, bindings)
-    start = {bid: sol.values[s.Index()] for bid, s in model.start.items()}
+    start = {bid: sol.values[s.Index()] * model.g for bid, s in model.start.items()}
+    if model.state is not None:                 # fixed blocks keep their real starts
+        start.update({bid: s for bid, (s, _) in model.state.fixed.items() if bid in start})
     for bid, blk in model.over.items():         # given blocks (started parks, rewritten moves)
         blocks[bid] = blk
         if bid not in start:
@@ -609,7 +625,7 @@ def _solve_plan(model: _Model, time_limit: float, deterministic: bool, objective
         if spot is not None:
             park, blocks[d] = park_pair(batch, blocks[d], spot)
             blocks[park.id] = park
-            start[park.id] = sol.values[model.kstart[d].Index()]
+            start[park.id] = sol.values[model.kstart[d].Index()] * model.g
     return Plan(mode=mode, blocks=blocks, start=start,
                 bindings=bindings, status=status, solve_seconds=time.perf_counter() - t0,
                 objective=objective, solver_status=sol.status), sol
