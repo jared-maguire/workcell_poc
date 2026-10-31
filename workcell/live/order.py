@@ -50,7 +50,8 @@ def _depends_on(plan: Plan, preds: dict[str, dict[tuple[str, When], None]],
 
 def _nest_handoffs(plan: Plan, batch: CompiledBatch) -> list[tuple[str, str]]:
     """(placer, remover) handoffs: in each nest of capacity c, the block placing the k-th stay
-    (planned arrival order, initial occupants first) waits for the remover of the (k-c)-th."""
+    (planned arrival order, initial occupants first) waits for the (k-c)-th departure (the
+    nest's removers in planned start order; ruling R6)."""
     initial = batch.initial_locations()
     movers: dict[str, list[tuple[int, str, str]]] = {}   # same order plate_stays uses
     for bid in plan.start:
@@ -76,9 +77,10 @@ def _nest_handoffs(plan: Plan, batch: CompiledBatch) -> list[tuple[str, str]]:
         if nest not in nests:
             continue
         cap = nests[nest].capacity
-        stays = sorted(by_nest[nest], key=lambda s: (s[1] != "", s[0], s[1], s[2]))
-        for (_, _, _, remover), (_, placer, _, _) in zip(stays, stays[cap:]):
-            if placer and remover is not None:
+        arrivals = sorted(by_nest[nest], key=lambda s: (s[1] != "", s[0], s[1], s[2]))
+        departures = sorted((plan.start[r], r) for *_, r in by_nest[nest] if r is not None)
+        for (_, placer, _, _), (_, remover) in zip(arrivals[cap:], departures):
+            if placer:
                 out.append((placer, remover))
     return out
 

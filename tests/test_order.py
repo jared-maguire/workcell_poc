@@ -132,3 +132,16 @@ def test_project_rejects_end_without_start():
     plan, _ = _setup([a], {"w/00": 0}, {}, {})
     with pytest.raises(AssertionError):
         project(plan, {"w/00": []}, {}, {"w/00": 3}, now=3)
+
+
+def test_start_pred_pairs_with_kth_departure():
+    # Ruling R6: h holds 2; a arrives 0, b arrives 1, b leaves 5, c arrives 6, a leaves 9.
+    # c takes the slot b freed, so it waits on b's remover (@5), not a's (@9).
+    blocks = [_move("w/00", "a", "s", "h"), _move("w/01", "b", "s", "h"),
+              _move("w/02", "b", "h", "s"), _move("w/03", "c", "s", "h"),
+              _move("w/04", "a", "h", "s")]
+    start = {"w/00": 0, "w/01": 1, "w/02": 5, "w/03": 6, "w/04": 9}
+    plan, batch = _setup(blocks, start, {x: "s" for x in "abc"}, {"h": 2, "s": 10**9})
+    preds = plan_preds(plan, batch)
+    assert [x for x, w in preds["w/03"] if w == "start"] == ["w/02"]
+    assert project(plan, preds, {}, {}, now=0)["w/03"] == 6
