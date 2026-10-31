@@ -299,10 +299,10 @@ class _Model:
             self.m.AddNoOverlap(ivs)
 
     def objective(self, objective: Objective):
-        """Minimize the objective. With an idle-hold limit: 100 x objective + total idle-hold
-        time (keep waits short, leaving headroom under the limit) + how long parked plates
-        wait before leaving + PARK_COST per park (park only when it is worth it, and then
-        right away); when soft, total excess over the limit comes first."""
+        """Minimize the objective. With an idle-hold limit: 100 x objective + how long parked
+        plates wait before leaving + PARK_COST per park (park only when it is worth it, and
+        then right away); when soft, total excess over the limit comes first. (A total-idle-
+        time term cost ~3 h of planned makespan on 10 PCRs, so it is left out.)"""
         self.mk = self.m.NewIntVar(0, 2 * self.horizon, "makespan")
         self.m.AddMaxEquality(self.mk, list(self.end.values()))
         if objective == "makespan":
@@ -319,7 +319,7 @@ class _Model:
         if not self.limit:
             self.m.Minimize(primary)
             return
-        total = (100 * primary + sum(self.gaps) + sum(self.park_delay)
+        total = (100 * primary + sum(self.park_delay)
                  + PARK_COST * sum(self.parked.values()))
         if self.soft:
             total += 200 * self.horizon * (len(self.gaps) + 1) * sum(self.excess)

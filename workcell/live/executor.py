@@ -149,9 +149,13 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
         if due:
             plan = dataclasses.replace(
                 plan, blocks={**plan.blocks, **{b: blocks[b] for b in pending}}, start=start_at)
-            preds = plan_preds(plan, batch)
-            for d in due:               # the park only waits for its own deps
-                preds[f"{d}.park"] = [(x, "end") for x in blocks[f"{d}.park"].deps]
+            for d in due:               # edit the order graph in place (no re-sort)
+                k = f"{d}.park"
+                preds[k] = [(x, "end") for x in blocks[k].deps]
+                preds[d] = [*preds.get(d, []), (k, "end")]
+                for b, ps in preds.items():     # the nest now frees when the park starts
+                    if b != k:
+                        preds[b] = [(k, "start") if p == (d, "start") else p for p in ps]
             pending.sort(key=lambda b: (start_at[b], b))
         return bool(due)
 
