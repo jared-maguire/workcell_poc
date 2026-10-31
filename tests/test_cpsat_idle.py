@@ -7,7 +7,9 @@ from workcell.compiler import compile_batch
 from workcell.config import parse_workcell
 from workcell.dsl import load_batch
 from workcell.parking import park_durations, park_pair, parking_spots, plan_parks
-from workcell.planners.cpsat import ReplanState, plan_cpsat
+import dataclasses
+
+from workcell.planners.cpsat import ReplanState, plan_cpsat, replan_cpsat
 from workcell.sim.executor import execute
 from workcell.validate import validate_plan
 
@@ -102,3 +104,29 @@ def test_park_durations_var_source(timed_batch):
     b = timed_batch(1)
     assert park_durations(b, b.block("pcr_live-0/15"), "hotel1") == (20, 70)   # doors+move; move+store
     assert park_durations(b, b.block("pcr_live-0/15"), "store1") == (80, 130)  # +store; retrieve+move+store
+
+
+def test_replan_with_violation_already_past(timed_batch):
+    """The plate has already idled 900 s past the limit: a hard plan is impossible, the soft
+    re-plan still finishes and moves the plate out at once."""
+    b = timed_batch(3)
+    st = busy_state(b)
+    st.now += 900
+    new = replan_cpsat(b, st, time_limit=1, max_idle_hold=300)
+    assert new.finished and validate_plan(new, b) == []
+    assert plan_parks(new)["pcr_live-2/11"] == "hotel1"
+    assert new.start["pcr_live-2/11.park"] == st.now
+
+
+def test_replan_keeps_fixed_parks(timed_batch):
+    b = timed_batch(3)
+    st = busy_state(b)
+    p = solve(b, st)
+    k = "pcr_live-2/11.park"
+    fixed = {**st.fixed, k: (p.start[k], p.end(k))}
+    st2 = dataclasses.replace(st, now=p.end(k) + 10, fixed=fixed,
+                              parks={"pcr_live-2/11": "hotel1"}, hint=dict(p.start),
+                              hint_bindings=p.bindings, hint_parks=plan_parks(p))
+    new = replan_cpsat(b, st2, time_limit=1, max_idle_hold=300)
+    assert new.finished and validate_plan(new, b, max_idle_hold=300) == []
+    assert plan_parks(new)["pcr_live-2/11"] == "hotel1" and new.start[k] == p.start[k]

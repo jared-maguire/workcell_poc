@@ -14,7 +14,7 @@ from ortools.sat.python import cp_model
 
 from workcell.idle import hold_chains
 from workcell.ir import CompiledBatch, resolve
-from workcell.parking import park_durations, park_pair, parking_spots
+from workcell.parking import park_durations, park_pair, parking_spots, plan_parks
 from workcell.plan import Plan, bind_batch
 from workcell.planners.greedy import plan_greedy
 
@@ -316,16 +316,22 @@ class _Model:
             total += 200 * self.horizon * (len(self.gaps) + 1) * sum(self.excess)
         self.m.Minimize(total)
 
-    def churn_objective(self, state: ReplanState, cap: int, weight: int):
-        """Ruling R8 phase 2: hold makespan at `cap` and minimize changes to the current plan —
-        `weight` per binding that differs from `state.hint_bindings`, plus the total distance
-        of each unfixed block's start from its `state.hint`."""
+    def churn_objective(self, state: ReplanState, cap: int, weight: int, excess_cap: int = 0):
+        """Ruling R8 phase 2: hold makespan at `cap` (and total idle-hold excess at
+        `excess_cap`) and minimize changes to the current plan — `weight` per binding or park
+        decision that differs from `state.hint_bindings` / `state.hint_parks`, plus the total
+        distance of each unfixed block's start from its `state.hint`."""
         for e in self.end.values():
             self.m.Add(e <= cap)
+        if self.excess:
+            self.m.Add(sum(self.excess) <= excess_cap)
         terms = []
         for (wf, var, cand), lit in self.x.items():
             if state.hint_bindings.get(wf, {}).get(var) == cand:
                 terms.append(weight * (1 - lit))
+        for d, lits in sorted(self.park.items()):
+            want = state.hint_parks.get(d)
+            terms.append(weight * (self.parked[d] if want is None else 1 - lits[want]))
         for bid, h in sorted(state.hint.items()):
             if bid in self.start and bid not in state.fixed:
                 d = self.m.NewIntVar(0, self.horizon, f"dev[{bid}]")
@@ -400,23 +406,28 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
 
 
 def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2.0,
-                 reassign_weight: int = 600) -> Plan:
+                 reassign_weight: int = 600, max_idle_hold: int | None = None) -> Plan:
     """Ruling R8: a low-churn re-plan. Phase 1 minimizes makespan from `state`; phase 2 holds
     that makespan and minimizes churn against `state.hint`/`state.hint_bindings` (see
     `_Model.churn_objective`). Both are deterministic and isolated, each with `time_limit`.
-    If phase 2 finds nothing, phase 1's plan is returned. solver_status is "<p1>/<p2>"."""
+    If phase 2 finds nothing, phase 1's plan is returned. solver_status is "<p1>/<p2>".
+    With `max_idle_hold` the limit is soft (spec): phase 1 minimizes the total excess over it
+    first, phase 2 holds that excess too, and park decisions count as churn."""
     t0 = time.perf_counter()
-    m1 = _Model(batch, state)
+    m1 = _Model(batch, state, max_idle_hold, soft=True)
     m1.objective("makespan")
     m1.hint_starts(state.hint)
     m1.hint_bindings(state.hint_bindings)
+    m1.hint_parks(state.hint_parks)
     first, sol1 = _solve_plan(m1, time_limit, True, "makespan", t0)
     if not first.finished:
         return first
-    m2 = _Model(batch, state)
-    m2.churn_objective(state, round(sol1.objective), reassign_weight)
+    m2 = _Model(batch, state, max_idle_hold, soft=True)
+    m2.churn_objective(state, sol1.values[m1.mk.Index()], reassign_weight,
+                       sum(sol1.values[e.Index()] for e in m1.excess))
     m2.hint_starts(first.start)
     m2.hint_bindings(first.bindings)
+    m2.hint_parks(plan_parks(first))
     second, sol2 = _solve_plan(m2, time_limit, True, "makespan", t0)
     best = second if second.finished else first
     best.solver_status = f"{sol1.status}/{sol2.status}"
