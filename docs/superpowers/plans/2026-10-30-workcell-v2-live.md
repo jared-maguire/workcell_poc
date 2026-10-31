@@ -30,8 +30,9 @@ CP-SAT keeps the v1 model, extended to take a `ReplanState` (fixed past and runn
 - Noise defaults: `noise=0.05` (σ of the relative Normal), `delay_prob=0.02`, and `delay_range=(2.0, 5.0)` (multiplier).
   - A draw depends only on `(seed, block_id, instruction_index)`. Use `random.Random(f"{seed}:{block_id}:{index}")`.
   - Results are rounded to int and are ≥ 0. A 0 s instruction stays 0.
-- Live defaults: `seed=0`, `replan_threshold=300`, `replan_time_limit=5.0`, `time_limit=30.0` (initial plan). The objective is `makespan`.
-- In live mode CP-SAT is deterministic: `num_workers=1`, `random_seed=0`, and a deterministic-time limit (`max_deterministic_time = time_limit`) instead of wall time. Same process plus same inputs gives the same result.
+- Live defaults: `seed=0`, `replan_threshold=300`, `replan_time_limit=2.0` (deterministic seconds, **per phase**), `time_limit=10.0` (initial plan, warm-started with `hint="serial"`). Good-enough plans are the goal; no further scheduler tuning.
+- **No churn** (user direction): a re-plan runs in two phases (makespan, then churn with makespan held), and is adopted only if it beats the current projected makespan by ≥ `replan_threshold`; otherwise the event status is `"not_worth_it"` and execution keeps sliding. Unstarted plates may be reassigned to other instruments (use idle hardware) when that buys an earlier finish.
+- In live mode CP-SAT is deterministic: `num_workers=8`, `interleave_search=True`, `random_seed=0`, `max_deterministic_time = time_limit`, solved in an isolated child process with retry (see controller rulings R5, R7). Same inputs give the same result, across processes too.
 - R4 occupancy, the block-id format, the lock model and the validator-as-oracle rules from `CLAUDE.md` all still hold. In v2, lock waits are normal and are not a bug signal.
 - Commit trailers on every commit:
   ```
@@ -266,6 +267,47 @@ def test_nothing_left_no_push(timed_batch):
 
 ---
 
+### Task 4d: Two-phase, low-churn re-plan
+
+**Files:**
+- Modify: `workcell/planners/cpsat.py`
+- Create: `tests/test_replan.py`
+
+**Interfaces:**
+- Consumes: `ReplanState` (with `hint` = projected starts and `hint_bindings` = the current plan's bindings), `plan_cpsat(..., deterministic=True)`.
+- Produces: `replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2.0, reassign_weight: int = 600) -> Plan`.
+  1. **Phase 1:** `plan_cpsat(batch, objective="makespan", time_limit=time_limit, deterministic=True, state=state)`. If it is not optimal or feasible, return it unchanged.
+  2. **Phase 2:** the same model with `makespan <= phase1.makespan`. Minimize churn, defined as `reassign_weight × (number of (wf, var) whose binding differs from state.hint_bindings, over vars used by unstarted blocks)` plus `Σ |start[b] − state.hint[b]|` over unstarted blocks that have a hint. Hint phase 2 with phase 1's solution, and give it the same time limit. If phase 2 isn't optimal or feasible, return phase 1's plan.
+  3. Both phases are deterministic and isolated, as `plan_cpsat` already is. The returned `Plan` sets `solver_status` to `"<phase1>/<phase2>"`.
+  4. Refactor as needed so phase 2 reuses `_Model`. For example, add `_Model.churn_objective(state, cap, weight)` alongside `objective()`. Don't duplicate the model build.
+
+- [ ] **Step 1: Write failing tests** in `tests/test_replan.py`, built on `timed_batch(3)` and `p0 = plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")`.
+
+Helper `state_after_overrun(b, p0, extra) -> ReplanState`:
+- Take `run`, the earliest-ending block whose duration is 4020. Let `s = p0.start[run]` and `now = s + 4020 + extra`.
+- `fixed` holds every block with `p0.end(bid) <= s`, at its planned `(start, end)`, plus `run: (s, now)`.
+- `bindings` holds only the (wf, var) pairs that some fixed block's instructions or moves use, at their `p0` values.
+- `hint` holds, for each unfixed block, `max(p0.start[bid], now)`.
+- `hint_bindings` holds all of `p0.bindings`.
+
+Tests:
+- `test_no_delay_no_churn`: with `extra=0`, `r = replan_cpsat(b, st, time_limit=2)`. Assert that it is optimal or feasible, that `r.bindings == p0.bindings`, and that `r.start[bid] == st.hint[bid]` for every unfixed block.
+- `test_idle_thermocycler_used`:
+  - Pick `extra=3000`, so the run's thermocycler stays busy for 3000 s longer.
+  - Assert that a workflow whose thermocycle hasn't started, and which `p0` bound to the same thermocycler as `run`, is rebound to the other thermocycler.
+  - Assert that `r.makespan` is no greater than phase 1's makespan. Expose phase 1 through a `_last_phase1` attribute on the module, or by calling `plan_cpsat` directly with the same state.
+- `test_phase2_failure_falls_back_to_phase1`: monkeypatch the phase 2 solve so it returns no solution, then assert that the result equals the phase 1 plan's starts and bindings.
+- `test_deterministic`: two calls with the same state give equal starts and bindings.
+
+Plans whose fixed blocks have actual sizes different from planned can't go through `validate_plan` (it uses planned durations). Their validity is checked end to end through the live executor in Task 6, so these tests don't call the validator on them.
+
+- [ ] **Step 2:** Run the tests and confirm they fail.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run the tests and confirm they pass. Then run the full suite.
+- [ ] **Step 5:** Commit with the message `feat: two-phase low-churn re-plan`.
+
+---
+
 ### Task 5: Live executor
 
 **Files:**
@@ -274,7 +316,7 @@ def test_nothing_left_no_push(timed_batch):
 **Interfaces:**
 - Consumes: Task 2 `NoiseParams` and `actual_block`; Task 3 `ReplanState`; Task 4 `plan_preds`, `project` and `max_push`; v1 `World`, `Trace`, `InstructionEvent`, `MoveEvent` and `Alarm`.
 - Produces:
-  - `@dataclass ReplanEvent(time: int, trigger: str, delay: int, push: int, pushed_block: str, solve_seconds: float, status: str, makespan_before: int, makespan_after: int | None)`
+  - `@dataclass ReplanEvent(time: int, trigger: str, delay: int, push: int, pushed_block: str, solve_seconds: float, status: str, makespan_before: int, makespan_after: int | None, adopted: bool, reassigned: int)`. `status` is the solver's (`optimal`, `feasible`, `no_solution`, …) or `not_worth_it`. `reassigned` counts the bindings that changed when the plan was adopted.
   - `@dataclass LiveResult(trace: Trace, plans: list[Plan], replans: list[ReplanEvent], actual: dict[str, list[int]], bindings: dict[str, dict[str, str]])`. `actual` holds the per-block instruction durations used, and `bindings` the bindings in force at the end.
   - `execute_live(batch, plan: Plan, noise: NoiseParams, replan: Callable[[ReplanState], Plan], threshold: int) -> LiveResult`
 - **Event loop** (integer seconds):
@@ -291,7 +333,7 @@ def test_nothing_left_no_push(timed_batch):
         - `bindings`: the current plan's bindings, kept only for vars used by started blocks
         - `hint = projected`
      2. Call `replan(state)` and time it with `time.perf_counter`.
-     3. If the new plan is optimal or feasible, adopt it: rebuild `plan_preds` and bind the not-yet-started blocks from the new plan. Otherwise keep the current plan.
+     3. Adopt the new plan only if it is optimal or feasible **and** `makespan_before − new.makespan >= threshold`. On adoption, rebuild `plan_preds` and bind the not-yet-started blocks from the new plan. A solved plan that doesn't clear the bar gets `status="not_worth_it"` and `adopted=False`. A failed solve keeps its solver status, with `adopted=False`.
      4. Append a `ReplanEvent` in both cases. `delay` is the trigger block's actual minus planned duration. `makespan_before` is `max` over projected ends. `makespan_after` is the new plan's makespan, or `None`.
 
      The clock does not advance during the solve.
@@ -301,8 +343,8 @@ def test_nothing_left_no_push(timed_batch):
 - [ ] **Step 1: Write failing tests** in `tests/test_live_executor.py`. As-run validation arrives in Task 6, so these tests check the trace directly.
 
 ```python
-def p0(b): return plan_cpsat(b, time_limit=5, deterministic=True)
-def cp(b): return lambda st: plan_cpsat(b, time_limit=3, deterministic=True, state=st)
+def p0(b): return plan_cpsat(b, time_limit=5, deterministic=True, hint="serial")
+def cp(b): return lambda st: replan_cpsat(b, st, time_limit=2)
 QUIET = NoiseParams(noise=0, delay_prob=0)
 
 def overrun(block_id, extra):
@@ -330,7 +372,8 @@ def test_long_delay_triggers_replan(timed_batch):
         r = execute_live(b, p0(b), QUIET, cp(b), 300)
     assert r.replans and r.replans[0].trigger == "pcr_live-0/12" and r.replans[0].push > 300
     assert r.trace.alarm is None
-    assert len(r.plans) == 1 + sum(e.status in ("optimal", "feasible") for e in r.replans)
+    assert len(r.plans) == 1 + sum(e.adopted for e in r.replans)
+    assert all(e.status == "not_worth_it" for e in r.replans if not e.adopted and e.makespan_after is not None)
 
 def test_huge_threshold_never_replans(timed_batch):
     b = timed_batch(3); r = execute_live(b, p0(b), NoiseParams(seed=1, delay_prob=0.2), cp(b), 10**9)
@@ -382,13 +425,13 @@ def test_delay_on_last_block_no_replan(timed_batch):
     - `start` comes from the trace span starts.
     - `status` is `"complete"` if every compiled block completed and there is no alarm. Otherwise it is `"alarm"` if there was an alarm, and `"incomplete"` if not.
     - `mode="live"`.
-  - `@dataclass LiveStats(seed: int, threshold: int, replans: int, failed_replans: int, total_delay: int, planned_makespan: int, actual_makespan: int)`. `total_delay` is the sum over executed blocks of actual minus planned block duration.
+  - `@dataclass LiveStats(seed: int, threshold: int, replans: int, adopted_replans: int, not_worth_it: int, failed_replans: int, reassignments: int, total_delay: int, planned_makespan: int, actual_makespan: int)`. `total_delay` is the sum over executed blocks of actual minus planned block duration.
   - `@dataclass LiveSession(session: Session, result: LiveResult, live: LiveStats, errors: list[str])`. `session` is a v1 `Session` with exactly one `RunResult("live", as_run, trace, compute_stats(as_run, trace, batch), errors)` and `session.live` set to the report payload (Task 7).
   - `Session` gains `live: dict | None = None`, the last field with a default, so v1 construction still works.
-  - `run_live(workcell, specs, *, seed=0, noise=0.05, delay_prob=0.02, delay_range=(2.0, 5.0), replan_threshold=300, replan_time_limit=5.0, time_limit=30.0, workcell_source="", batch_source="") -> LiveSession`. It runs:
+  - `run_live(workcell, specs, *, seed=0, noise=0.05, delay_prob=0.02, delay_range=(2.0, 5.0), replan_threshold=300, replan_time_limit=2.0, time_limit=10.0, workcell_source="", batch_source="") -> LiveSession`. It runs:
     1. compile
-    2. the initial `plan_cpsat(..., deterministic=True, time_limit=time_limit)`. If that isn't optimal or feasible, raise `RuntimeError("initial plan failed: <status>")`.
-    3. `execute_live` with a `replan` callback that calls `plan_cpsat(batch, time_limit=replan_time_limit, deterministic=True, state=st)`
+    2. the initial `plan_cpsat(..., deterministic=True, time_limit=time_limit, hint="serial")`. If that isn't optimal or feasible, raise `RuntimeError("initial plan failed: <status>")`.
+    3. `execute_live` with a `replan` callback that calls `replan_cpsat(batch, st, time_limit=replan_time_limit)`
     4. `as_run_plan`
     5. `errors = validate_plan(as_run, batch, check_durations=False)`
     6. stats
@@ -410,6 +453,7 @@ def test_some_seed_replans_and_still_validates(workcell_small):
     runs = [run_live(workcell_small, specs[:4], seed=s, delay_prob=0.1, replan_threshold=60,
                      time_limit=10, replan_time_limit=3) for s in range(6)]
     assert any(r.live.replans > 0 for r in runs) and all(r.errors == [] for r in runs)
+    assert all(r.live.replans == r.live.adopted_replans + r.live.not_worth_it + r.live.failed_replans for r in runs)
 
 def test_validator_duration_flag(timed_batch):
     b = timed_batch(1); p = plan_cpsat(b, time_limit=5, deterministic=True)
@@ -444,8 +488,8 @@ def test_same_seed_same_session(workcell_small):
   - **Time format:** h:mm:ss everywhere a time is shown (axes, tooltips, the cursor readout, stats).
   - **Single run:** the mode tabs are hidden.
   - **Speed:** the choices are `[10, 30, 60, 120, 300, 600]` s/s, defaulting to 60.
-  - **Re-plan markers:** a marker on both Gantts and on the scrubber at each `replans[i].time`. Failed re-plans use a muted style. Tooltip: `re-planned at H:MM:SS — <trigger label> ran <M:SS> long; projected push <M:SS> > <threshold M:SS>` (or `re-plan failed (<status>) at …`).
-  - **Stats:** a "Live" stats block showing seed, threshold, re-plans (failed), total delay, planned makespan and actual makespan.
+  - **Re-plan markers:** a marker on both Gantts and on the scrubber at each `replans[i].time`. There are three styles: adopted (solid), not worth it (outline), and failed (muted). An adopted re-plan's tooltip adds `, reassigned N` when N > 0. Tooltip: `re-planned at H:MM:SS — <trigger label> ran <M:SS> long; projected push <M:SS> > <threshold M:SS>; finish <old> → <new>`. A not-worth-it re-plan reads `kept plan at H:MM:SS — re-plan would save only <M:SS>`, and a failed one `re-plan failed (<status>) at …`.
+  - **Stats:** a "Live" stats block showing seed, threshold, re-plans (adopted / not worth it / failed), reassignments, total delay, planned makespan and actual makespan.
 - [ ] **Step 1: Write failing tests** in `tests/test_report.py`:
 
 ```python
@@ -454,7 +498,7 @@ def test_live_report_data(workcell_small):
     ls = run_live(workcell_small, specs[:3], seed=1, delay_prob=0.2, replan_threshold=60, time_limit=5, replan_time_limit=2)
     d = data_of(build_report(ls.session))
     assert d["live"]["seed"] == 1 and isinstance(d["live"]["replans"], list)
-    assert set(d["live"]["stats"]) >= {"replans", "total_delay", "planned_makespan", "actual_makespan"}
+    assert set(d["live"]["stats"]) >= {"replans", "adopted_replans", "not_worth_it", "reassignments", "total_delay", "planned_makespan", "actual_makespan"}
     assert len(d["runs"]) == 1 and d["runs"][0]["mode"] == "live"
 
 def test_v1_report_has_no_live(session):
@@ -485,8 +529,8 @@ def test_v1_report_has_no_live(session):
 
 **Interfaces:**
 - Produces:
-  - **CLI:** `python -m workcell live WORKCELL BATCH [--seed 0] [--replan-threshold 300] [--replan-time-limit 5] [--time-limit 30] [--noise 0.05] [--delay-prob 0.02] [--out out/live.html]`.
-    - It prints `seed`, `planned makespan`, `actual makespan` (both h:mm:ss), `re-plans: N (F failed)`, `completed: X/Y`, and then `report: <path>`.
+  - **CLI:** `python -m workcell live WORKCELL BATCH [--seed 0] [--replan-threshold 300] [--replan-time-limit 2] [--time-limit 10] [--noise 0.05] [--delay-prob 0.02] [--out out/live.html]`.
+    - It prints `seed`, `planned makespan`, `actual makespan` (both h:mm:ss), `re-plans: N (A adopted, K not worth it, F failed)`, `completed: X/Y`, and then `report: <path>`.
     - The exit code is 0, or 2 for config, compile and input errors, as with `run`.
 - [ ] **Step 1: Write failing tests:**
 
@@ -509,7 +553,7 @@ def test_cli_live_bad_file():
 - [ ] **Step 3:** Implement the subcommand.
 - [ ] **Step 4:** Run the tests and the full suite. All should pass.
 - [ ] **Step 5: Example report.**
-  1. Find the lowest seed in 0–20 whose default-parameter run of `examples/pcr_live.py` produces at least one successful re-plan.
+  1. Find the lowest seed in 0–20 whose default-parameter run of `examples/pcr_live.py` produces at least one adopted re-plan.
   2. Generate `docs/reports/pcr10_live.html` with that seed.
   3. In `README.md`, add a "v2: live re-planning" section with:
      - what it does (2–3 sentences)

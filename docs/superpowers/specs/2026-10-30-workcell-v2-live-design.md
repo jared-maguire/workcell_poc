@@ -22,6 +22,7 @@ v1 plans a batch once, with every step taking 1 time unit, and executes the plan
 - Report built from what actually happened, with re-plan markers and a few extra stats.
 
 **Non-goals**
+- Further scheduler optimization work. Good-enough plans are the goal; ideas are parked in `docs/FUTURE.md`.
 - A timing / calibration mode that benchmarks observed times and writes them back into the workflow. This is in `docs/FUTURE.md`.
 - Instruments continuing to run while CP-SAT re-plans. The simulated clock pauses during a solve; `docs/FUTURE.md` has the real-time version.
 - Comparing planners, or exposing greedy modes in v2's command.
@@ -109,14 +110,19 @@ At sim time `now`, CP-SAT solves the remaining work:
 - **Fixed:** finished blocks are out of the model. Running blocks are fixed at their actual start, with their remaining time taken as planned.
 - **Bindings:** instrument variable bindings already used by a started block stay fixed. Everything else is free to rebind (e.g. which thermocycler).
 - **Plates and nests:** each plate's current location replaces its initial location. Occupancy and stays start from the current state.
-- **Time:** every unstarted block starts at or after `now`. The objective is makespan, and the solve is hinted with the current shifted plan.
-- **Budget:** each re-plan has its own time limit. The default is 5 s *(Claude's call)*. The initial plan defaults to 30 s.
+- **Time:** every unstarted block starts at or after `now`.
+- **Two phases (decided: use idle hardware, but no churn):**
+  1. Minimize makespan, hinted with the current shifted plan and its bindings.
+  2. With makespan held at phase 1's best value, minimize churn. Churn = 600 × (number of unstarted blocks' instrument bindings that differ from the current plan) + Σ |new start − projected start| over unstarted blocks. Plates that haven't started may move to another instrument (idle hardware gets used), but only when it buys an earlier finish. *(The 600 s weight per reassignment is Claude's call.)*
+- **Adoption rule (decided):** the new plan replaces the current one only if its makespan beats the current projected makespan by at least the re-plan threshold. Otherwise execution keeps sliding on the current plan, and the event is recorded with status `"not_worth_it"`.
+- **Budget ("good enough", decided):** the initial plan gets 10 deterministic-seconds, warm-started with a serial one-workflow-at-a-time plan (no greedy). Each re-plan phase gets 2 deterministic-seconds.
 - **Clock:** the simulated clock pauses during the solve.
 - **Fallback:** if CP-SAT returns no solution, keep following the current plan and record the failed re-plan.
+- **Isolation:** deterministic solves run in a child process with retry, because OR-Tools 9.15 on Python 3.14 intermittently aborts with heap corruption. A retry returns the same answer.
 
 **Determinism:** CP-SAT must be configured so the same model gives the same answer. Use a deterministic-time limit, or a single worker with a fixed seed, rather than a wall-clock limit. The method is the builder's call; the reproducibility requirement in §2 is not.
 
-Reproducibility is guaranteed **within one environment**: the same machine and OR-Tools version *(Claude's call)*.
+Reproducibility is guaranteed **within one environment**: the same machine and OR-Tools version *(Claude's call)*, and across separate processes, so rerunning the CLI with the same seed gives the same run.
 - Tests compare two runs made in the same process, with wall-clock solve times excluded.
 - Tests check properties of particular seeds (e.g. "at least one re-plan") rather than exact makespans.
 - The committed example report does not need to regenerate byte-for-byte on other machines.
@@ -168,7 +174,7 @@ A new subcommand; v1's `run` and `scale` are unchanged:
 
 ```
 python -m workcell live WORKCELL BATCH [--seed N=0] [--replan-threshold SECONDS=300]
-    [--replan-time-limit S=5] [--time-limit S=30] [--noise 0.05] [--delay-prob 0.02]
+    [--replan-time-limit S=2] [--time-limit S=10] [--noise 0.05] [--delay-prob 0.02]
     [--out PATH=out/live.html]
 ```
 
