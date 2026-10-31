@@ -18,9 +18,62 @@ _PREFIX = {"liquid_handler": "lh", "heated_shaker": "hs", "plate_sealer": "seal"
 
 def _arm(workcell: Workcell) -> str:
     arms = workcell.of_type("arm")
-    if len(arms) != 1:
-        raise CompileError(f"exactly one arm is supported, found {len(arms)}")
+    if not arms:
+        raise CompileError("the workcell has no arm")
     return arms[0]
+
+
+class AmbiguousRoute(CompileError):
+    """A move's route depends on how an instrument variable is bound (its candidates are
+    reached by different arms)."""
+
+
+def _arms_of(workcell: Workcell, owner: str, candidates: dict[str, list[str]] | None) -> list[str]:
+    if not owner.startswith("?"):
+        return workcell.arms_reaching(owner)
+    if len(workcell.of_type("arm")) == 1:
+        return workcell.of_type("arm")
+    cands = (candidates or {}).get(owner)
+    if cands is None:
+        raise AmbiguousRoute(f"no candidates known for {owner}")
+    sets = {tuple(workcell.arms_reaching(c)) for c in cands}
+    if len(sets) > 1:
+        raise AmbiguousRoute(f"{owner} candidates are reached by different arms")
+    return list(sets.pop())
+
+
+def route(workcell: Workcell, src_owner: str, dst_owner: str,
+          candidates: dict[str, list[str]] | None = None) -> list[tuple[str, str | None, str | None]]:
+    """Hops (arm, from handoff, to handoff) moving a plate from `src_owner` to `dst_owner`:
+    one hop when an arm reaches both, else the shortest relay through handoff spots (None =
+    the move's own src/dst). Ties go to sorted ids."""
+    first, last = _arms_of(workcell, src_owner, candidates), _arms_of(workcell, dst_owner, candidates)
+    common = sorted(set(first) & set(last))
+    if common:
+        return [(common[0], None, None)]
+    handoffs = sorted(workcell.of_type("handoff"))
+    prev: dict[str, tuple[str, str] | None] = {a: None for a in sorted(first)}
+    todo = sorted(first)
+    while todo:
+        a = todo.pop(0)
+        if a in last:
+            arms, hos = [a], []
+            while prev[arms[-1]] is not None:
+                b, h = prev[arms[-1]]
+                arms.append(b)
+                hos.append(h)
+            arms.reverse()
+            hos.reverse()
+            return [(arm, hos[k - 1] if k else None, hos[k] if k < len(hos) else None)
+                    for k, arm in enumerate(arms)]
+        for h in handoffs:
+            reachers = workcell.arms_reaching(h)
+            if a in reachers:
+                for b in reachers:
+                    if b not in prev:
+                        prev[b] = (a, h)
+                        todo.append(b)
+    raise CompileError(f"no route from {src_owner} to {dst_owner}")
 
 
 def _type_of(workcell: Workcell, instrument: str, var_types: dict[str, str] | None) -> str:
@@ -46,10 +99,15 @@ def _duration(workcell: Workcell, itype: str, op: str, times: dict[str, int] | N
 
 def transport_instructions(workcell: Workcell, plate: str, src: str, dst: str,
                            var_types: dict[str, str] | None = None,
-                           times: dict[str, int] | None = None) -> list[Instruction]:
-    """Instructions that move `plate` from nest `src` to nest `dst` with the arm."""
-    arm = _arm(workcell)
+                           times: dict[str, int] | None = None,
+                           candidates: dict[str, list[str]] | None = None) -> list[Instruction]:
+    """Instructions that move `plate` from nest `src` to nest `dst`: one arm, or a relay
+    through handoff spots (see `route`; AmbiguousRoute if the route depends on a binding)."""
     src_owner, dst_owner = workcell.nest_owner(src), workcell.nest_owner(dst)
+    hops = route(workcell, src_owner, dst_owner, candidates)
+    if len(hops) > 1:
+        return _relay(workcell, plate, src, dst, hops, var_types, times)
+    arm = hops[0][0]
     types = {name: _type_of(workcell, name, var_types) for name in (src_owner, arm, dst_owner)}
 
     def ins(instrument: str, op: str, args: dict | None = None) -> Instruction:
@@ -63,6 +121,37 @@ def transport_instructions(workcell: Workcell, plate: str, src: str, dst: str,
     out.append(ins(arm, "move", {"plate": plate, "src": src, "dst": dst}))
     out += [ins(n, "close_door") for n in doors]
     if types[dst_owner] == "storage":
+        out.append(ins(dst_owner, "store", {"plate": plate}))
+    return out
+
+
+def _relay(workcell: Workcell, plate: str, src: str, dst: str, hops, var_types, times):
+    """A move relayed through handoff spots, as one instruction list: check everything on the
+    route, then each arm's hop (doors open just around the hop that uses them)."""
+    src_owner, dst_owner = workcell.nest_owner(src), workcell.nest_owner(dst)
+    chain = [src_owner] + [n for arm, _, h in hops for n in (arm, h) if n] + [dst_owner]
+    chain = list(dict.fromkeys(chain))
+
+    def ins(instrument: str, op: str, args: dict | None = None) -> Instruction:
+        itype = _type_of(workcell, instrument, var_types)
+        return Instruction(instrument, op, args or {}, _duration(workcell, itype, op, times))
+
+    def is_type(name, t):
+        return _type_of(workcell, name, var_types) == t
+
+    out = [ins(n, "check_status") for n in chain]
+    if is_type(src_owner, "storage"):
+        out.append(ins(src_owner, "retrieve", {"plate": plate}))
+    for k, (arm, a, b) in enumerate(hops):
+        here, there = a or src, b or dst
+        door = (src_owner if k == 0 and is_type(src_owner, "thermocycler") else
+                dst_owner if k == len(hops) - 1 and is_type(dst_owner, "thermocycler") else None)
+        if door:
+            out.append(ins(door, "open_door"))
+        out.append(ins(arm, "move", {"plate": plate, "src": here, "dst": there}))
+        if door:
+            out.append(ins(door, "close_door"))
+    if is_type(dst_owner, "storage"):
         out.append(ins(dst_owner, "store", {"plate": plate}))
     return out
 
