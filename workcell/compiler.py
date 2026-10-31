@@ -1,7 +1,7 @@
 """Compiler: workflow specs -> per-workflow DAGs of synchronized blocks (spec §6)."""
 from __future__ import annotations
 
-from workcell.config import TWO_POSITION_TYPES, Workcell
+from workcell.config import INSTRUMENT_TYPES, STEP_TYPES, TWO_POSITION_TYPES, Workcell
 from workcell.dsl import Op, WorkflowSpec
 from workcell.ir import Block, CompiledBatch, CompiledWorkflow, Instruction, PlateMove
 
@@ -158,12 +158,8 @@ class _WorkflowCompiler:
         return var
 
     def _two_position(self, itype: str) -> str:
-        """One instrument variable per workflow per two-position type (a workflow keeps its
-        plates on one stamper / liquid handler)."""
-        if itype == "head_stamper":
-            if self.stamper is None:
-                self.stamper = self._instrument("head_stamper", "?stamp")
-            return self.stamper
+        """One instrument variable per workflow per two-position lab type (a workflow keeps
+        its plates on one liquid handler)."""
         if itype not in self.two_pos:
             self.two_pos[itype] = self._instrument(itype, f"?{_PREFIX[itype]}")
         return self.two_pos[itype]
@@ -242,6 +238,10 @@ class _WorkflowCompiler:
                 label = f"stamp {src} → {dst}"
             elif op.kind == "step":
                 itype, bcs = op.params["itype"], [self.barcodes[p] for p in op.plates]
+                if itype in INSTRUMENT_TYPES and itype not in STEP_TYPES:
+                    raise CompileError(
+                        f"step on {itype} in {self.wf_id}: steps run on lab instruments "
+                        f"({', '.join(sorted(STEP_TYPES))}); use stamp/thermocycle/store")
                 if itype in TWO_POSITION_TYPES:
                     inst = self._two_position(itype)
                     nests = [f"{inst}.src", f"{inst}.dst"][-len(op.plates):]

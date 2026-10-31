@@ -89,3 +89,13 @@ def test_consecutive_same_type_steps_stay_put():
     i = labels.index("capture S0001")
     assert labels[i + 1] == "heated_wash S0001"
     assert wf.blocks[i].instructions[1].instrument == wf.blocks[i + 1].instructions[1].instrument
+
+
+@pytest.mark.parametrize("itype", ["head_stamper", "thermocycler", "storage", "arm"])
+def test_step_on_builtin_type_is_compile_error(itype):
+    """Built-in types have their own ops (stamp, thermocycle, store); `step` is for lab steps."""
+    @workflow(times=TIMES)
+    def f(w):
+        w.step(itype, "mix", w.own("S0001"), seconds=5)
+    with pytest.raises(CompileError, match=f"step on {itype}"):
+        compile_one(f)
