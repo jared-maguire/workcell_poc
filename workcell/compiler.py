@@ -227,8 +227,10 @@ class _WorkflowCompiler:
                 nests = [inst]
                 bc = self.barcodes[op.plates[0]]
                 program = op.params["program"]
+                own = (round(sum(m for _, m in program) * 60)
+                       if self.spec.times is not None else None)
                 instr = self._ins(inst, "run_program", {"plate": bc, "program": program},
-                                  own=round(sum(m for _, m in program) * 60))
+                                  own=own)
                 label = f"thermocycle {bc}"
             else:
                 raise CompileError(f"unknown op kind {op.kind!r} in {self.wf_id}")
