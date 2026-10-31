@@ -87,3 +87,18 @@ def test_replan_after_tech_park_of_variant_removal(two_arm):
     assert new.finished and validate_plan(new, b) == []
     assert plan_parks(new) == {d: spot} and new.blocks[d].moves[0].src == spot
     assert new.start[park.id] == t
+
+
+def test_replan_with_unmodelled_hint_park(two_arm):
+    """The current plan holds a lab-tech park (not started yet) the model has no option for:
+    the churn phase must not choke on it."""
+    b = compile_batch(two_arm, specs(2))
+    p = plan(b)
+    order = sorted(p.start, key=lambda k: (p.start[k], k))[:12]
+    keep = {wf: dict(v) for wf, v in p.bindings.items()}
+    st = ReplanState(now=max(p.end(k) for k in order),
+                     fixed={k: (p.start[k], p.end(k)) for k in order}, bindings=keep,
+                     hint=dict(p.start), hint_bindings=keep,
+                     hint_parks={"pcr_live-0/15": "hotel1", "pcr_live-1/15": "hotel2"})
+    new = replan_cpsat(b, st, time_limit=1, max_idle_hold=300)
+    assert new.finished and validate_plan(new, b) == []

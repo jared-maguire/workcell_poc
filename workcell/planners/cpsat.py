@@ -426,7 +426,10 @@ class _Model:
             if d in self.over:
                 continue
             want = state.hint_parks.get(d)
-            terms.append(weight * (self.parked[d] if want is None else 1 - lits[want]))
+            if want is None:
+                terms.append(weight * self.parked[d])
+            elif want in lits:              # a park the model can't make costs nothing to drop
+                terms.append(weight * (1 - lits[want]))
         for bid, h in sorted(state.hint.items()):
             if bid in self.start and bid not in state.fixed:
                 d = self.m.NewIntVar(0, self.horizon, f"dev[{bid}]")
