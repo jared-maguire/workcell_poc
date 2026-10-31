@@ -22,8 +22,8 @@ _RELEASE, _INSTR = 0, 1
 @dataclass
 class ReplanEvent:
     time: int
-    trigger: str            # the block whose finish revealed the delay
-    delay: int              # trigger's actual minus planned duration
+    trigger: str            # the started block that has overrun the most (may still be running)
+    delay: int              # its actual (so far) minus planned duration
     push: int               # largest projected push of an unstarted block
     pushed_block: str
     solve_seconds: float
@@ -52,7 +52,8 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
                  replan: Callable[[ReplanState], Plan], threshold: int) -> LiveResult:
     """Run `plan` with actual durations from `noise`. A block starts once its planned start has
     passed, its plan-order predecessors allow it (see order.plan_preds) and its locks are
-    free. When a block finishes and the projected push of some unstarted block exceeds
+    free. When any block finishes, project the rest (running blocks end no earlier than now,
+    so a still-running overrun shows up too); when the projected push of some unstarted block exceeds
     `threshold`, ask `replan` for a new plan and adopt it only if it finishes at least
     `threshold` sooner than sliding; otherwise keep sliding (the projection becomes the new
     baseline, so the same delay does not trigger again)."""
@@ -142,9 +143,13 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
             for bid in pending:                 # keep sliding: projection is the new baseline
                 start_at[bid] = proj[bid]
         pending.sort(key=lambda b: (start_at[b], b))
-        planned = compiled[trigger].duration
+        # Blame the started block that has overrun the most so far — it may still be running
+        # (its lateness shows up in the projection as soon as any other block finishes).
+        late, delay = max(((bid, (ended.get(bid, t) - s) - compiled[bid].duration)
+                           for bid, s in sorted(started.items())),
+                          key=lambda x: (x[1], x[0] == trigger))
         result.replans.append(ReplanEvent(
-            time=t, trigger=trigger, delay=(t - started[trigger]) - planned, push=push,
+            time=t, trigger=late, delay=delay, push=push,
             pushed_block=who, solve_seconds=solve,
             status=new.status if (adopt or after is None) else "not_worth_it",
             makespan_before=before, makespan_after=after, adopted=adopt,

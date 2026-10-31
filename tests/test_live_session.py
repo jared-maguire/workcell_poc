@@ -53,6 +53,7 @@ def test_session_payload(workcell_small):
     assert ls.session.runs[0].mode == "live" and len(ls.session.runs) == 1
     assert ls.session.live["seed"] == 1 and isinstance(ls.session.live["replans"], list)
     assert ls.session.live["stats"]["actual_makespan"] == ls.live.actual_makespan
+    assert set(ls.session.live["solve_seconds"]) == {"initial", "replans"}
 
 
 def test_as_run_validates_after_forced_replan(timed_batch):

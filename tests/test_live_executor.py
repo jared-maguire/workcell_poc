@@ -98,3 +98,19 @@ def test_delay_on_last_block_no_replan(timed_batch):
     with patch("workcell.live.executor.actual_block", overrun(last, 5000)):
         r = execute_live(b, p, QUIET, cp(b), 300)
     assert r.replans == [] and r.trace.alarm is None
+
+
+def test_overrun_attributed_while_still_running(timed_batch):
+    """Another block's finish can reveal a still-running overrun: the event must name the
+    overrunning block, with its positive delay so far, and the as-run schedule stays valid."""
+    from workcell.live.session import as_run_plan
+    from workcell.validate import validate_plan
+    b = timed_batch(4)
+    p = plan_cpsat(b, time_limit=3, deterministic=True, hint="serial")   # 2/00 overlaps 0/12's end
+    bad = lambda st: Plan("cpsat:makespan", {}, {}, {}, "no_solution", solver_status="UNKNOWN")
+    for replanner in (bad, cp(b)):
+        with patch("workcell.live.executor.actual_block", overrun("pcr_live-2/00", 6000)):
+            r = execute_live(b, p, QUIET, replanner, 300)
+        assert r.replans and r.replans[0].trigger == "pcr_live-2/00"
+        assert all(e.delay > 0 for e in r.replans)
+    assert validate_plan(as_run_plan(b, r), b, check_durations=False) == []

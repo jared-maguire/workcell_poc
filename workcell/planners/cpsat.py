@@ -348,8 +348,10 @@ def _solve(m: cp_model.CpModel, solver: cp_model.CpSolver, isolate: bool) -> _So
 
 
 def _child_timeout(time_limit: float) -> float:
-    """Wall-clock seconds a child solve may take before it counts as a failed attempt."""
-    return max(60.0, 10 * time_limit)
+    """Wall-clock seconds a child solve may take before it counts as a failed attempt. Generous:
+    deterministic seconds can take ~10x as long in wall time on a loaded machine, and a
+    timeout must not decide a live run's outcome."""
+    return max(300.0, 60 * time_limit)
 
 
 def _child_main() -> None:
@@ -372,15 +374,19 @@ def _solve_isolated(model_text: str, params_text: str, timeout: float) -> _Solut
     """Solve in a child process. A child killed by a signal (the OR-Tools abort), hung past
     `timeout`, or returning an unreadable result is retried (deterministic, so the same
     answer), up to `_ATTEMPTS` times in all, then given up with status "CRASHED". A child
-    exiting with an error code failed in Python, deterministically: raise RuntimeError."""
+    exiting with an error code failed in Python, deterministically: raise RuntimeError. If
+    every attempt timed out, raise too: a load-dependent "no solution" would make the same
+    inputs give different live runs."""
     request = pickle.dumps((model_text, params_text))
     why = ""
+    timeouts = 0
     for _ in range(_ATTEMPTS):
         try:
             child = subprocess.run(_CHILD_CMD, input=request, capture_output=True,
                                    timeout=timeout)
         except subprocess.TimeoutExpired:
             why = f"timed out after {timeout:g} s"
+            timeouts += 1
             continue
         err = child.stderr.decode(errors="replace")[-2000:]
         if child.returncode > 0:
@@ -392,6 +398,9 @@ def _solve_isolated(model_text: str, params_text: str, timeout: float) -> _Solut
             return pickle.loads(child.stdout)
         except Exception as e:      # noqa: BLE001 — any unreadable result is a failed attempt
             why = f"unreadable result ({e!r}):\n{err}"
+    if timeouts == _ATTEMPTS:
+        raise RuntimeError(f"CP-SAT child timed out {_ATTEMPTS} times ({why}); "
+                           "the machine may be overloaded")
     warnings.warn(f"CP-SAT child failed {_ATTEMPTS} times; last {why}", RuntimeWarning,
                   stacklevel=3)
     return _Solution("CRASHED", None, [], 0.0)

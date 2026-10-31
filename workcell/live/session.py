@@ -92,5 +92,7 @@ def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
     session = Session(workcell, batch, [run], workcell_source, batch_source,
                       live={"seed": seed, "threshold": replan_threshold,
                             "replans": [asdict(e) for e in result.replans],
-                            "stats": asdict(live)})
+                            "stats": asdict(live),
+                            "solve_seconds": {"initial": initial.solve_seconds,
+                                              "replans": sum(e.solve_seconds for e in result.replans)}})
     return LiveSession(session, result, live, errors)

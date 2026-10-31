@@ -13,7 +13,7 @@ Ideas deliberately left out of the current version. Newest at the top of each se
 
 ## Live re-planning (from v2 observations)
 
-- **Detect an overrun while the block is still running.** v2 only notices a delay when the late block finishes; by then a long thermocycle's thermocycler is already free, so re-plans can rarely move queued plates to idle hardware. An "overdue" check at planned end + threshold, with an estimate of the remaining time, would let re-plans use idle instruments while the overrun is happening.
+- **Better overrun detection and estimates.** v2 checks for delays whenever any block finishes; a still-running overrun is noticed then, but only as "ends now" (optimistic), and not at all if nothing else finishes meanwhile. A timed "overdue" check at planned end + threshold, plus a pessimistic remaining-time estimate, would let re-plans move queued plates to idle instruments while the overrun is still happening.
 
 ## Scheduling performance (from v2 observations)
 

@@ -91,7 +91,7 @@
   }
   function fmtInstr(i) {
     const args = Object.entries(i.args || {}).map(([k, v]) => `${esc(k)}=${esc(fmtVal(v))}`).join(", ");
-    return `<li class="${i.duration ? "" : "zero"}">${esc(i.instrument)}.<span class="op">${esc(i.op)}</span>(${args}) <span class="d">${i.duration}m</span></li>`;
+    return `<li class="${i.duration ? "" : "zero"}">${esc(i.instrument)}.<span class="op">${esc(i.op)}</span>(${args}) <span class="d">${LIVE ? hms(i.duration) : `${i.duration}m`}</span></li>`;
   }
   const fmtNum = (v, d) => (v === null || v === undefined ? "—" : (d ? Number(v).toFixed(d) : String(v)));
   const dur = (v, d) => (v === null || v === undefined ? "—" : LIVE ? hms(v) : `${fmtNum(v, d)} min`);
@@ -193,9 +193,10 @@
       ["waiting (total)", r => dur(r.stats.total_waiting)],
       ["waiting (mean)", r => dur(r.stats.mean_waiting, 1)],
       ["blocked (total)", r => dur(Object.values(r.stats.blocked || {}).reduce((a, b) => a + b, 0))],
-      ["planner status", r => esc(SOLVER_LABEL[r.status] || r.status)],
-      ["solve time", r => `${Number(r.stats.solve_seconds).toFixed(2)} s`],
-      ["lock waits", r => String(r.stats.lock_waits)],
+      ["planner status", r => (LIVE ? `live CP-SAT (${LIVE.stats.replans} re-plans)` : esc(SOLVER_LABEL[r.status] || r.status))],
+      ["solve time", r => (LIVE ? `${LIVE.solve_seconds.initial.toFixed(1)} s initial + ${LIVE.solve_seconds.replans.toFixed(1)} s re-plans`
+                                : `${Number(r.stats.solve_seconds).toFixed(2)} s`)],
+      ...(LIVE ? [] : [["lock waits", r => String(r.stats.lock_waits)]]),
       ["alarm", r => (r.stats.alarm ? esc(r.stats.alarm) : "—")],
     ];
     if (LIVE) {
@@ -232,7 +233,7 @@
       const v = u[inst.id] || 0;
       const has = inst.id in bl, m = bl[inst.id] || 0, bv = T ? m / T : 0;
       const title = has ? `${dur(m)} holding a plate while idle (blocked)` : "";
-      return `<div class="ub" title="${esc(title)}"><span title="${esc(inst.type)}">${esc(inst.id)}</span><div class="rail"><div class="fill" style="width:${(100 * v).toFixed(1)}%;background:${instColor(inst.id)}"></div><div class="fill blocked" style="width:${(100 * bv).toFixed(1)}%;--c:${instColor(inst.id)}"></div></div><span class="pct">${Math.round(100 * v)}%</span><span class="blk-m">${has ? (m ? `${m}m blocked` : "—") : ""}</span></div>`;
+      return `<div class="ub" title="${esc(title)}"><span title="${esc(inst.type)}">${esc(inst.id)}</span><div class="rail"><div class="fill" style="width:${(100 * v).toFixed(1)}%;background:${instColor(inst.id)}"></div><div class="fill blocked" style="width:${(100 * bv).toFixed(1)}%;--c:${instColor(inst.id)}"></div></div><span class="pct">${Math.round(100 * v)}%</span><span class="blk-m">${has ? (m ? `${LIVE ? hms(m) : `${m}m`} blocked` : "—") : ""}</span></div>`;
     }).join("");
     $("#util-note").textContent = `${run.mode} · solid: busy time / makespan (${dur(run.stats.makespan)}) · hatched: blocked, a plate rests in the instrument while it is idle`;
   }
@@ -329,7 +330,7 @@
       bars += mine.map(b => barHtml(b, TYPE_COLOR[primaryType(b)] || "#888", T)).join("");
       bars += (ghostsWf[w.id] || []).map(g => barHtml(g, "", T)).join("");
       const lat = run.stats.latency ? run.stats.latency[w.id] : null;
-      return row(`<span class="sw" style="background:${wfColor(i)}"></span>${esc(w.id)}<span class="sub">${lat === null || lat === undefined ? "—" : lat + "m"}</span>`, bars);
+      return row(`<span class="sw" style="background:${wfColor(i)}"></span>${esc(w.id)}<span class="sub">${lat === null || lat === undefined ? "—" : (LIVE ? hms(lat) : lat + "m")}</span>`, bars);
     }).join("");
     $("#gantt-wf").innerHTML = ganttShell(T, byWf);
 
@@ -644,7 +645,7 @@
         const res = b.instruments.map(x => `<span class="rchip${x.startsWith("?") ? " var" : ""}" style="border-color:${x.startsWith("?") ? "var(--muted)" : instColor(x)}">${esc(x)}</span>`).join("")
           + b.plates.map(chip).join("");
         return `<tr class="blk" data-blk="${esc(b.id)}"><td class="bid">${esc(short(b.id))}</td><td><span class="kind">${esc(b.kind)}</span></td>
-          <td>${esc(b.label)}</td><td class="dur">${b.duration}m</td>
+          <td>${esc(b.label)}</td><td class="dur">${LIVE ? hms(b.duration) : `${b.duration}m`}</td>
           <td class="deps">${b.deps.map(d => `<a data-dep="${esc(d)}">${esc(short(d))}</a>`).join(" ") || '<span class="muted">—</span>'}</td>
           <td><div class="res">${res}</div></td><td><ol class="instr">${b.instructions.map(fmtInstr).join("")}</ol></td></tr>`;
       }).join("");

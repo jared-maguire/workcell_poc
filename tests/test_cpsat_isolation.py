@@ -88,7 +88,7 @@ def test_child_timeout_is_retried(timed_batch, monkeypatch, tmp_path):
 
 
 def test_child_timeout_default():
-    assert cpsat._child_timeout(2.0) == 60 and cpsat._child_timeout(30.0) == 300
+    assert cpsat._child_timeout(2.0) == 300 and cpsat._child_timeout(30.0) == 1800
 
 
 def test_corrupt_child_result_is_a_failed_attempt(timed_batch, monkeypatch):
@@ -116,3 +116,16 @@ def test_non_deterministic_stays_in_process(timed_batch, monkeypatch):
     b = timed_batch(2)
     p = plan_cpsat(b, time_limit=2, hint=False)
     assert p.status in ("optimal", "feasible") and validate_plan(p, b) == []
+
+
+def test_all_attempts_timing_out_is_an_error(timed_batch, monkeypatch, tmp_path):
+    """A solve that keeps timing out must not silently become "no_solution": that would make
+    a live run's outcome depend on machine load (breaking same-seed reproducibility)."""
+    _crash(monkeypatch, tmp_path, 99, failure=_HANG)
+    monkeypatch.setattr(cpsat, "_child_timeout", lambda time_limit: 0.5)
+    with pytest.raises(RuntimeError, match="timed out"):
+        plan_cpsat(timed_batch(1), time_limit=0.3, deterministic=True, hint="serial")
+
+
+def test_child_timeout_is_generous():
+    assert cpsat._child_timeout(2.0) >= 300 and cpsat._child_timeout(30.0) >= 1800
