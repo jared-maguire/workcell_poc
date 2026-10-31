@@ -25,9 +25,9 @@ The report opens on the best run (shortest makespan among runs where every workf
 ```
 seed: 0
 planned makespan: 5:56:22
-actual makespan:  7:50:47
-re-plans: 11 (4 adopted, 7 not worth it, 0 failed)
-idle hold: limit 300s, parks 22, violations 4 (worst 396s)
+actual makespan:  7:50:30
+re-plans: 11 (5 adopted, 6 not worth it, 0 failed)
+idle hold: limit 300s, parks 18, violations 6 (worst 399s)
 completed: 10/10
 ```
 

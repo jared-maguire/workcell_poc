@@ -120,12 +120,16 @@ def execute_live(batch: CompiledBatch, plan: Plan, noise: NoiseParams,
     spot = (parking_spots(batch.workcell) or [None])[0]
 
     def waiting(t: int) -> list[tuple[int, str]]:
-        """(deadline, removal) for each pending, unparked removal whose plate sits in its
-        nest, idle: the plate must start leaving by the deadline to stay within the limit."""
+        """(deadline, removal) for each pending, unparked removal whose deps have all ended and
+        whose plate sits in its nest, idle: the plate must start leaving by the deadline to
+        stay within the limit. (A park a re-plan dropped is neither pending nor started.)"""
         out = []
         for d in pending:
-            if d not in removals or f"{d}.park" in blocks or blocks[d].moves[0].src == spot:
+            k = f"{d}.park"
+            if d not in removals or k in pending or k in started or blocks[d].moves[0].src == spot:
                 continue
+            if not all(x in ended for x in blocks[d].deps if x in start_at):
+                continue                # the plate still has a use here: parking won't help
             (mv,) = blocks[d].moves
             if mv.plate in busy or world.location(mv.plate) != mv.src:
                 continue

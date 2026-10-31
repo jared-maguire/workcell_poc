@@ -16,6 +16,7 @@ Ideas deliberately left out of the current version. Newest at the top of each se
 - **Better overrun detection and estimates.** v2 checks for delays whenever any block finishes; a still-running overrun is noticed then, but only as "ends now" (optimistic), and not at all if nothing else finishes meanwhile. A timed "overdue" check at planned end + threshold, plus a pessimistic remaining-time estimate, would let re-plans move queued plates to idle instruments while the overrun is still happening.
 
 - **Smarter overrun estimates for parking.** Lab-tech parks act only when a waiting plate hits its deadline; a remaining-time estimate for overdue steps (or asking the instrument, as a real thermocycler reports time left) would let re-plans park earlier and reshuffle other work. A "late by X, assume X more" estimate was tried and caused a re-plan storm.
+- **Re-plan after a lab-tech park.** A lab-tech park frees the instrument, but the plan order still queues the instrument's next user behind the parked plate's unpark, so nobody else uses the freed instrument until then. A re-plan right after the park would let other work move in.
 - **Mid-use idle waits.** The idle-hold rule bounds waits between a workflow's own steps on an instrument (e.g. a sample on the stamper while its partner plate is fetched) but never parks for them; step-time noise can push those a few seconds over the limit.
 
 ## Scheduling performance (from v2 observations)

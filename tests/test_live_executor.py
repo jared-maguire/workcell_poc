@@ -137,14 +137,23 @@ def test_idle_hold_park_runs(timed_batch):
 def test_adopted_replan_swaps_park_blocks(timed_batch):
     """An adopted plan without the park: the stale park block never runs."""
     from test_cpsat_idle import busy_state, solve
+    from workcell.idle import idle_gaps
     b = timed_batch(3)
     p = solve(b, busy_state(b))
     noparks = lambda st: replan_cpsat(b, st, time_limit=0.3)
     with patch("workcell.live.executor.actual_block", overrun("pcr_live-0/00", 900)):
         r = execute_live(b, p, QUIET, noparks, 0, max_idle_hold=300)
     assert r.replans and r.replans[0].adopted
-    assert "pcr_live-2/11.park" not in r.trace.completed
-    assert r.trace.alarm is None and r.trace.completed == all_ids(b)
+    assert r.trace.alarm is None and r.trace.completed >= all_ids(b)
+    # the stale planned park never ran; the waiting plate was still parked in time (a
+    # lab-tech park under the same id, at its deadline)
+    sp = r.trace.spans
+    gaps = idle_gaps(r.blocks, {k: s for k, (s, _) in sp.items()},
+                     {k: e for k, (_, e) in sp.items()}, b)
+    assert max(g.length for g in gaps if g.plate == "E0003" and g.nest == "stamp1.dst") <= 300
+    k = "pcr_live-2/11.park"
+    if k in sp:
+        assert sp[k][0] >= sp["pcr_live-2/10"][1] + 300 - r.blocks[k].duration
 
 
 def test_long_mid_use_wait_triggers_idle_replan(timed_batch):
@@ -183,3 +192,15 @@ def test_waiting_plate_parked_at_deadline():
     assert max(g.length for g in gaps if g.nest == "stamp1.dst") <= 300
     assert any(k.endswith("/11.park") for k in r.trace.completed)
     assert validate_plan(as_run_plan(b, r), b, check_durations=False) == []
+
+
+def test_tech_park_waits_for_pending_use(timed_batch):
+    """The primer fetch overruns by 600 s while the stamped plate waits on stamp1.dst for its
+    second stamp. Parking it then would only bring it back: no lab-tech park for 0/11."""
+    b = timed_batch(1)
+    p = plan_cpsat(b, time_limit=0.5, deterministic=True, hint="serial", max_idle_hold=300)
+    bad = lambda st: Plan("cpsat:makespan", {}, {}, {}, "no_solution", solver_status="UNKNOWN")
+    with patch("workcell.live.executor.actual_block", overrun("pcr_live-0/07", 600)):
+        r = execute_live(b, p, QUIET, bad, 300, max_idle_hold=300)
+    assert r.trace.alarm is None and r.trace.completed >= all_ids(b)
+    assert "pcr_live-0/11.park" not in r.trace.completed
