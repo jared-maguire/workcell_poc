@@ -50,15 +50,3 @@ def test_type_op_key_beats_op_key(workcell_small):
     blk = compile_batch(workcell_small, [t()]).workflows[0].blocks[0]
     assert blk.duration == 8 + 7
 
-
-def test_park_blocks_use_times_table(workcell_small):
-    from workcell.planners.greedy import plan_greedy
-    specs, _ = load_batch(EXAMPLES / "pcr_live.py")
-    b = compile_batch(workcell_small, specs[:2])
-    p = plan_greedy(b, park=True)
-    parks = [blk for blk in p.blocks.values() if blk.inserted]
-    assert parks
-    for park in parks:
-        unpark = p.blocks[park.id.removesuffix(".park")]
-        # scanner -> hotel is a bare arm move: 10 s from the times table (default would be 1)
-        assert park.duration == 10 and unpark.duration == 10

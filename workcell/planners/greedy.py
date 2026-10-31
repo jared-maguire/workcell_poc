@@ -184,10 +184,9 @@ class _Greedy:
                                for h in wc.of_type("hotel")) or "no hotel configured"
             self.hotel_full[blk.id] = f"hotel full: cannot park {move.plate} ({hotels})"
             return False
-        times = self.batch.specs[self.wf_index[blk.workflow]].times
         park = Block(id=f"{blk.id}.park", workflow=blk.workflow, kind="park",
                      label=f"park {move.plate} → {hotel}",
-                     instructions=transport_instructions(wc, move.plate, cur, hotel, times=times),
+                     instructions=transport_instructions(wc, move.plate, cur, hotel),
                      moves=[PlateMove(move.plate, cur, hotel)], plates={move.plate},
                      deps=[], inserted=True)
         if self._blockers(park):       # arm, current owner, hotel, or plate not free
@@ -196,8 +195,7 @@ class _Greedy:
         var_types = {v: wc.instruments[cands[0]].type for v, cands in wf.variables.items()}
         self.rewritten[blk.id] = replace(
             blk, label=f"unpark {move.plate} {hotel} → {move.dst}",
-            instructions=transport_instructions(wc, move.plate, hotel, move.dst, var_types,
-                                          times),
+            instructions=transport_instructions(wc, move.plate, hotel, move.dst, var_types),
             moves=[PlateMove(move.plate, hotel, move.dst)], plates=set(blk.plates),
             deps=[*blk.deps, park.id])
         self._start(park, {}, t)
