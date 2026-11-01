@@ -8,10 +8,10 @@
 
   const THEMES = {
     light: { bg: 0xeef3f8, floor: 0xe6edf5, grid: [0xb9c9db, 0xd3deea], body: 0xf8fbfd, edge: 0x2b5d93,
-             arm: 0x0a8fd0, glow: 0.15, tint: 0.55, run: 0x00a6d6, idle: 0xc4cfdb, borrowed: 0x8a96a3,
+             arm: 0x0a8fd0, glow: 0.15, tint: 0.55, throb: [0.05, 0.45], run: 0x00a6d6, idle: 0xc4cfdb, borrowed: 0x8a96a3,
              label: "#2b5d93", hemi: 0.9, sun: 0.35, fog: 1.6 },
     dark:  { bg: 0x070b12, floor: 0x0b1320, grid: [0x14304d, 0x0f2238], body: 0x0e1a2a, edge: 0x2a6fb0,
-             arm: 0x47e0ff, glow: 0.5, tint: 0.45, run: 0x47e0ff, idle: 0x26323f, borrowed: 0x6b7785,
+             arm: 0x47e0ff, glow: 0.5, tint: 0.45, throb: [0.1, 0.7], run: 0x47e0ff, idle: 0x26323f, borrowed: 0x6b7785,
              label: "#7fb4e8", hemi: 0.25, sun: 0.3, fog: 1.2 },
   };
   const SIZE = {           // w, h, d
@@ -21,11 +21,11 @@
     plate_reader: [0.7, 0.45, 0.6], vacuum_concentrator: [0.8, 0.7, 0.7], centrifuge: [0.8, 0.6, 0.8],
     handoff: [0.5, 0.15, 0.5],
   };
-  const CLOSED = new Set(["thermocycler", "centrifuge", "vacuum_concentrator", "plate_reader",
-                          "plate_sealer", "plate_peeler"]);    // a plate inside is out of sight
   const STACKED = new Set(["storage", "hotel"]);
   const MAX_STACK = 6;
-  const SHOULDER = 2.0, LIFT = 0.6, TRAIL = 0.35;          // TRAIL: fraction of a move drawn behind the plate
+  const THROB = 1.4;     // s per pulse of a working instrument, on the wall clock (not playback time)
+  const SHOULDER = 2.0, LIFT = 0.6;
+  const TRAIL_LINGER = 1.5, TRAIL_PTS = 24;   // a move's trail fades over 1.5 s of screen time after it ends
   const PLATE = [0.42, 0.09, 0.3];
 
   function create(el, opts) {
@@ -110,7 +110,7 @@
     }
 
     const plateGeo = new THREE.BoxGeometry(...PLATE), plateEdges = new THREE.EdgesGeometry(plateGeo);
-    let plates = {}, trails = {}, tl = null, initial = {}, lastT = 0;
+    let plates = {}, trails = {}, movesOf = {}, tl = null, initial = {}, lastT = 0, lastSpeed = 60;
 
     // ---- theme
     function applyTheme() {
@@ -134,7 +134,7 @@
       }
       for (const p of Object.values(plates)) setPlateColor(p);
       for (const t of Object.values(trails)) t.material.color.copy(t.userData.color());
-      pose(lastT);
+      pose(lastT, lastSpeed);
     }
     dark.addEventListener ? dark.addEventListener("change", applyTheme) : dark.addListener(applyTheme);
 
@@ -171,6 +171,8 @@
       plates = {}; trails = {};
       tl = M.timeline(run, insts);
       initial = run.initial_locations || {};
+      movesOf = {};
+      for (const m of tl.moves) (movesOf[m.plate] = movesOf[m.plate] || []).push(m);
       const ids = new Set([...Object.keys(initial), ...tl.moves.map(m => m.plate)]);
       for (const id of [...ids].sort()) {
         const m = new THREE.Mesh(plateGeo, new THREE.MeshStandardMaterial({ roughness: 0.5, emissiveIntensity: 0.35 }));
@@ -179,14 +181,16 @@
         setPlateColor(m);
         scene.add(m);
         plates[id] = m;
-        const tr = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.7 }));
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(3 * (TRAIL_PTS + 1)), 3));
+        const tr = new THREE.Line(geo, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9, depthWrite: false }));
         tr.userData.color = () => m.material.color;
         tr.material.color.copy(m.material.color);
         tr.visible = false;
         scene.add(tr);
         trails[id] = tr;
       }
-      pose(lastT);
+      pose(lastT, lastSpeed);
     }
 
     // where a plate sits on an instrument: on top, side by side for two nests, stacked in storage
@@ -226,8 +230,31 @@
       o.quill.position.set(Lk, p.y + len / 2 - SHOULDER, 0);
     }
 
-    function pose(t) {
+    // each plate's latest move leaves its arc behind it, fading out once the move is done
+    function drawTrails(t) {
+      const linger = TRAIL_LINGER * lastSpeed;
+      for (const [id, tr] of Object.entries(trails)) {
+        const ms = movesOf[id] || [];
+        let lo = 0, hi = ms.length - 1, k = -1;
+        while (lo <= hi) { const mid = (lo + hi) >> 1; if (ms[mid].t0 <= t) { k = mid; lo = mid + 1; } else hi = mid - 1; }
+        const m = k >= 0 ? ms[k] : null;
+        if (!m || t >= m.t1 + linger || !armObj[m.arm]) { tr.visible = false; continue; }
+        const a = restingSpot(m.src, 0), b = restingSpot(m.dst, 0);
+        if (!a || !b) { tr.visible = false; continue; }
+        const u = m.t1 > m.t0 ? Math.min(1, (t - m.t0) / (m.t1 - m.t0)) : 1;
+        const pos = tr.geometry.attributes.position;
+        for (let j = 0; j <= TRAIL_PTS; j++) { const q = along(m.arm, a, b, u * j / TRAIL_PTS); pos.setXYZ(j, q.x, q.y, q.z); }
+        pos.needsUpdate = true;
+        tr.geometry.computeBoundingSphere();
+        tr.material.opacity = 0.9 * (t < m.t1 ? 1 : 1 - (t - m.t1) / linger);
+        tr.visible = true;
+      }
+    }
+
+    let working = [];     // instruments doing work at the current t; they throb in frame()
+    function pose(t, speed) {
       lastT = t;
+      if (speed) lastSpeed = speed;
       if (!tl) return;
       const st = M.stateAt(tl, initial, t);
       const byInst = {};
@@ -240,7 +267,7 @@
         list.forEach(([nest, id], k) => {
           const p = plates[id], spot = restingSpot(nest, k);
           if (!p) return;
-          p.visible = !!spot && !CLOSED.has(o.type) && !(STACKED.has(o.type) && k >= MAX_STACK);
+          p.visible = !!spot && !(STACKED.has(o.type) && k >= MAX_STACK);   // always on top, so it stays in view
           if (spot) { p.position.copy(spot); p.rotation.y = o.g.rotation.y; }
         });
       }
@@ -251,9 +278,10 @@
         }
         const on = st.busy.has(id);
         o.strip.material.color.setHex(on ? th.run : th.idle);
-        o.body.material.emissiveIntensity = on ? (th === THEMES.dark ? 0.25 : 0.12) : 0;
+        if (!on) o.body.material.emissiveIntensity = 0;
         o.body.children[0].material = on ? runEdgeMat : edgeMat;
       }
+      working = [...st.busy].filter(id => instObj[id]);
       // arms: carrying, resting where they last put a plate down, or parked
       for (const arm of Object.keys(armObj)) {
         const c = st.arms[arm];
@@ -263,10 +291,6 @@
           reach(arm, p);
           const pl = plates[c.plate];
           pl.visible = true; pl.position.copy(p);
-          const tr = trails[c.plate], pts = [];
-          for (let k = 0; k <= 16; k++) pts.push(along(arm, a, b, Math.max(0, c.u - TRAIL) + (c.u - Math.max(0, c.u - TRAIL)) * k / 16));
-          tr.geometry.setFromPoints(pts);
-          tr.visible = true;
         } else {
           const nest = st.rest[arm], base = armObj[arm].base.position;
           const spot = nest !== undefined && restingSpot(nest, 0);
@@ -274,7 +298,7 @@
                           : new THREE.Vector3(base.x + armObj[arm].link, SHOULDER - 0.6, base.z));
         }
       }
-      for (const [id, tr] of Object.entries(trails)) if (tr.visible && !(st.plates[id] && st.plates[id].arm)) tr.visible = false;
+      drawTrails(t);
       request();
     }
 
@@ -315,11 +339,24 @@
     }, { passive: false });
 
     // ---- render on demand, only while visible
+    // working instruments throb even while playback is paused, so frames keep coming while
+    // any instrument works and the card is on screen (a steady glow under reduced motion)
     let visible = false, queued = false;
+    const still = matchMedia("(prefers-reduced-motion: reduce)");
+    const runColor = new THREE.Color();
+    function frame(now) {
+      queued = false;
+      if (!visible) return;
+      const pulse = still.matches ? 0.7 : 0.5 + 0.5 * Math.sin(now / 1000 * 2 * Math.PI / THROB);
+      for (const id of working) instObj[id].body.material.emissiveIntensity = th.throb[0] + (th.throb[1] - th.throb[0]) * pulse;
+      runEdgeMat.color.setHex(th.edge).lerp(runColor.setHex(th.run), 0.4 + 0.6 * pulse);
+      r.render(scene, cam);
+      if (working.length && !still.matches) request();
+    }
     function request() {
       if (queued || !visible) return;
       queued = true;
-      requestAnimationFrame(() => { queued = false; r.render(scene, cam); });
+      requestAnimationFrame(frame);
     }
     new IntersectionObserver(es => { visible = es[es.length - 1].isIntersecting; request(); }).observe(el);
     function size() {

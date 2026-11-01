@@ -524,7 +524,7 @@
     scrub.setAttribute("aria-valuenow", Math.floor(S.t));
     $("#tnow").textContent = LIVE ? `t = ${hms(S.t)} / ${hms(T)}` : `t = ${Math.floor(S.t)} / ${T} min`;
     updateFloor(S.t, animate);
-    lab3dDo(v => v.update(S.t));
+    lab3dDo(v => v.update(S.t, S.speed));
     if (S.playing && S.zoom > 1) follow();
   }
   function follow() {
@@ -757,7 +757,7 @@
         card.hidden = true;
         return;
       }
-      lab3dDo(v => { v.setRun(R()); v.update(S.t); });
+      lab3dDo(v => { v.setRun(R()); v.update(S.t, S.speed); });
     });
     io.observe(card);
   }

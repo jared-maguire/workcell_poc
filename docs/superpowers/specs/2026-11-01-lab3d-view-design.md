@@ -19,9 +19,8 @@ in both a light and a dark theme.
   - Each arm `move` instruction animates its arm carrying that plate from `src` to `dst`, starting
     at the instruction's start and taking its duration. Only the path shape is invented.
   - A plate rests in the nest it is in at time t (from `moves` and `initial_locations`, the same
-    data the 2D floor plan uses). Plates inside a closed instrument (thermocycler, centrifuge,
-    vacuum concentrator, plate reader…) are hidden or drawn inside; plates on storage/hotels are
-    shown stacked or as a count, builder's choice.
+    data the 2D floor plan uses). Plates always sit on top of their instrument, closed ones included
+    (Jared, 2026-11-01: clearer); plates on storage/hotels are shown stacked, with a count.
   - An instrument glows (outline and status strip in the run colour) exactly while one of its
     non-move instructions runs.
 - Plates coloured like the 2D floor plan: owned plates in their workflow's colour (`wfColor`),

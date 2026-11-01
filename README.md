@@ -18,7 +18,7 @@ With these unit step times the arm is the bottleneck and CP-SAT's lookahead pays
 
 The report opens on the best run (shortest makespan among runs where every workflow finished).
 
-**Lab 3D.** Next to the 2D floor plan, every report has a 3D view of the workcell in operation, kept in step with the playback controls. Arms carry plates over each move's exact start and duration from the trace. Instruments are tinted by type (the same colours as the 2D views) and glow while they run, plates take their workflow's colour, and the view follows your light or dark theme. Drag to orbit, scroll or pinch to zoom. The layout is automatic: each arm stands in a ring of the instruments it reaches, handoffs sit between arms, and separate lines sit side by side. For live runs, the speed menu goes down to 1 s/s so you can watch a single move; at 60 s/s a 10 s move is a blink with a trail.
+**Lab 3D.** Next to the 2D floor plan, every report has a 3D view of the workcell in operation, kept in step with the playback controls. Arms carry plates over each move's exact start and duration from the trace. Instruments are tinted by type (the same colours as the 2D views) and throb while they work, even with playback paused. Plates sit on top of their instrument and leave a fading trail along each move; they take their workflow's colour, and the view follows your light or dark theme. Drag to orbit, scroll or pinch to zoom. The layout is automatic: each arm stands in a ring of the instruments it reaches, handoffs sit between arms, and separate lines sit side by side. For live runs, the speed menu goes down to 1 s/s so you can watch a single move; at 60 s/s a 10 s move is a blink with a trail.
 
 ## Live mode: just-in-time dispatch
 
