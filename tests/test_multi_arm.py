@@ -90,3 +90,13 @@ def test_two_arm_model_same_across_processes():
                            env={**os.environ, "PYTHONHASHSEED": seed}).stdout
             for seed in ("1", "2", "3", "4")}
     assert len(outs) == 1 and next(iter(outs))
+
+
+def test_cpsat_default_hint_on_two_arm_libprep():
+    """The default warm start must handle two arms (greedy_hotel's parks can't route a move
+    whose destination is still a cross-zone variable)."""
+    from workcell.config import load_workcell
+    b = compile_batch(load_workcell(EX / "libprep_2arm.yaml"),
+                      load_batch(EX / "libprep_capture.py")[0])
+    p = plan_cpsat(b, time_limit=1)
+    assert p.status in ("optimal", "feasible", "no_solution")

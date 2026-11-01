@@ -12,7 +12,7 @@ A simulation playground for scheduling plate-handling workflows (such as PCR) on
 | greedy_hotel | done | 257 min |
 | jit | done (0.1 s) | 236 min |
 | cpsat:makespan | done (not proven best within the 30 s limit) | 204 min |
-| cpsat:sum_completion | done (not proven best within the 30 s limit) | 212 min |
+| cpsat:sum_completion | done (not proven best within the 30 s limit) | 209 min |
 
 With these unit step times the arm is the bottleneck and CP-SAT's lookahead pays off; with realistic times (live mode below) the dispatcher matches or beats it.
 

@@ -19,7 +19,7 @@ from ortools.sat.python import cp_model
 from workcell.compiler import route
 from workcell.ir import CompiledBatch, resolve
 from workcell.plan import Plan, bind_batch
-from workcell.planners.greedy import plan_greedy
+from workcell.planners.dispatch import plan_dispatch
 
 Objective = Literal["makespan", "sum_completion"]
 Hint = Literal["greedy", "serial"]
@@ -229,8 +229,9 @@ class _Model:
             raise ValueError(f"unknown CP-SAT objective {objective!r}")
 
     def hint(self):
-        """Ruling R6(c): hint from greedy_hotel fifo — compiled block starts and bindings."""
-        g = plan_greedy(self.batch, priority="fifo", park=True)
+        """Hint from the just-in-time dispatcher (any number of arms) — compiled block starts
+        and bindings. (Was greedy_hotel fifo, ruling R6(c); its parks can't route two arms.)"""
+        g = plan_dispatch(self.batch)
         if g.status != "complete":
             return
         for bid, s in g.start.items():
@@ -256,7 +257,7 @@ def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
                deterministic: bool = False) -> Plan:
     """Solve the batch with CP-SAT; status "optimal", "feasible", "infeasible" (proven), or
     "no_solution" (time limit / unknown). An invalid model is a bug and raises RuntimeError.
-    `hint` warm-starts the solve: "greedy" (or True) from greedy_hotel fifo, "serial" from
+    `hint` warm-starts the solve: "greedy" (or True) from the dispatcher, "serial" from
     `serial_hint`, None (or False) not at all. `deterministic` (ruling R5) uses 8
     interleaved workers, a fixed seed and a deterministic-time limit (`time_limit`) instead
     of wall time, so the same inputs give the same plan in any process; it also solves in a
