@@ -91,6 +91,50 @@ dispatch: 0.17 s
 
 At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. Each demo run takes about 2 seconds. Report: `docs/reports/libprep3_2arm_live.html`.
 
+## Scale: 10,000 samples a day
+
+The library prep demo at production volume: 105 batches of 96 samples (10,080 samples), arriving one every 13.7 min (24 h / 105).
+
+`examples/make_libprep_lines.py` generates `examples/libprep_10k.yaml`, a workcell of 4 separate lines.
+- **Each line** is the two-arm design: a prep arm and a capture arm, joined by a handoff spot.
+  - **Prep zone:** storage, a hotel, a scanner, a stamper, a sealer, a peeler, a reader, 2 thermocyclers, 2 liquid handlers and a shaker.
+  - **Capture zone:** a hotel, a centrifuge, a reader, 7 thermocyclers, 2 liquid handlers, 2 shakers and 2 concentrators.
+- **In total:** 8 arms, 36 thermocyclers, 16 liquid handlers, 12 shakers and 8 concentrators.
+- **Batch assignment:** each batch's plates start in one line's storage, round robin, and the batch stays on that line.
+
+```
+.venv/bin/python -m workcell live examples/libprep_10k.yaml examples/libprep_10k.py --release-every 823 --seed 0
+```
+```
+seed: 0
+forecast makespan: 33:39:51
+actual makespan:   35:58:13
+idle hold: limit 300s, parks 296, violations 50 (worst 555s)
+completed: 105/105
+latency: mean 10:57:57, max 23:59:01
+dispatch: 7.25 s
+```
+
+The run takes about 45 s in all. The report is 13 MB, so it isn't committed.
+
+**What it took to get there** (measured 2026-10-31):
+- **Release through the day.** With all 105 batches released at once, the dispatcher started them all within 8 h. Every batch then took 28–39 h instead of 10 h. Spread over the day, a batch takes the same ~10 h as on an empty cell.
+- **Keep lines separate.** At first, neighbouring lines shared a handoff spot so they could borrow each other's free instruments. Plates drifted across lines and needed relays through up to four arms at once, which hold all of them. Plates then waited on instruments for hours (385 idle-limit violations, worst 2.8 h). With separate lines there were 4 violations, worst 340 s. Workcells may now consist of separate groups of arms; a workflow uses only the instruments in its plates' group.
+- **Speed.** Dispatching the day went from 143 s to 4–7 s, by keeping the ready set, nest occupancy and locks up to date incrementally.
+
+**How much hardware?** Latency is measured from arrival:
+- "no noise" means planned step times.
+- seeds 0–2 use the default noise: 5% spread, and 2% of steps run 2–5× long.
+
+| configuration (4 lines) | thermocyclers | no noise: median / max | with noise: median | with noise: 90th percentile |
+|---|---|---|---|---|
+| A: as generated | 36 | 9.9 / 10.2 h | 10.2–10.3 h | 10.8–11.9 h |
+| B: 6 capture thermocyclers, 1 concentrator and 1 capture shaker per line | 32 | 10.0 / 10.2 h | 10.5–10.8 h | 11.8–13.1 h |
+| C: as B, 5 capture thermocyclers | 28 | 10.0 / 10.2 h | 10.5–11.0 h | 11.9–13.0 h |
+| D: as C, plus 1 prep thermocycler and 1 prep liquid handler per line (12 liquid handlers) | 24 | 10.3 / 11.3 h | 11.5–12.6 h | 14.6–19.2 h |
+
+A–C keep up with 105 batches a day, and latency doesn't grow through the day. D is past the edge: it still finishes, but queues build up under noise. B is the lean choice with headroom. Leaner cells recover more slowly from overruns. With noise, the slowest batch takes 13–25 h. That is the noise model, not the scheduler: a 4 h hybridization drawn 2–5× long.
+
 ## Quickstart
 
 ```
