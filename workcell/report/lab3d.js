@@ -8,10 +8,10 @@
 
   const THEMES = {
     light: { bg: 0xeef3f8, floor: 0xe6edf5, grid: [0xb9c9db, 0xd3deea], body: 0xf8fbfd, edge: 0x2b5d93,
-             arm: 0x0a8fd0, glow: 0.15, run: 0x00a6d6, idle: 0xc4cfdb, borrowed: 0x8a96a3,
+             arm: 0x0a8fd0, glow: 0.15, tint: 0.55, run: 0x00a6d6, idle: 0xc4cfdb, borrowed: 0x8a96a3,
              label: "#2b5d93", hemi: 0.9, sun: 0.35, fog: 1.6 },
     dark:  { bg: 0x070b12, floor: 0x0b1320, grid: [0x14304d, 0x0f2238], body: 0x0e1a2a, edge: 0x2a6fb0,
-             arm: 0x47e0ff, glow: 0.5, run: 0x47e0ff, idle: 0x26323f, borrowed: 0x6b7785,
+             arm: 0x47e0ff, glow: 0.5, tint: 0.45, run: 0x47e0ff, idle: 0x26323f, borrowed: 0x6b7785,
              label: "#7fb4e8", hemi: 0.25, sun: 0.3, fog: 1.2 },
   };
   const SIZE = {           // w, h, d
@@ -90,6 +90,8 @@
       instObj[id] = { g, body, strip, label, type, w, h, d, count: -1 };
     }
 
+    scene.updateMatrixWorld(true);      // restingSpot reads instrument matrices before the first render
+
     // SCARA arms: column, two links, a vertical quill that grips the plate
     const armObj = {};
     for (const [id, a] of Object.entries(L.arms)) {
@@ -125,7 +127,8 @@
       edgeMat.color.setHex(th.edge); runEdgeMat.color.setHex(th.run);
       armMat.color.setHex(th.arm); armMat.emissive.setHex(th.arm); armMat.emissiveIntensity = th.glow;
       for (const o of Object.values(instObj)) {
-        o.body.material.color.setHex(th.body);
+        // tinted by instrument type, with the 2D floor plan's type colours
+        o.body.material.color.setHex(th.body).lerp(new THREE.Color(opts.typeColor(o.type)), th.tint);
         o.body.material.emissive.setHex(th.run);
         drawLabel(o.label, o.label.userData.text, true);
       }

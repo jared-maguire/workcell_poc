@@ -12,13 +12,13 @@ A simulation playground for scheduling plate-handling workflows (such as PCR) on
 | greedy_hotel | done | 257 min |
 | jit | done (0.1 s) | 236 min |
 | cpsat:makespan | done (not proven best within the 30 s limit) | 204 min |
-| cpsat:sum_completion | done (not proven best within the 30 s limit) | 211 min |
+| cpsat:sum_completion | done (not proven best within the 30 s limit) | 208 min |
 
 With these unit step times the arm is the bottleneck and CP-SAT's lookahead pays off; with realistic times (live mode below) the dispatcher matches or beats it.
 
 The report opens on the best run (shortest makespan among runs where every workflow finished).
 
-**Lab 3D.** Next to the 2D floor plan, every report has a 3D view of the workcell in operation, kept in step with the playback controls. Arms carry plates over each move's exact start and duration from the trace. Instruments glow while they run, plates take their workflow's colour, and the view follows your light or dark theme. Drag to orbit, scroll or pinch to zoom. The layout is automatic: each arm stands in a ring of the instruments it reaches, handoffs sit between arms, and separate lines sit side by side. For live runs, the speed menu goes down to 1 s/s so you can watch a single move; at 60 s/s a 10 s move is a blink with a trail.
+**Lab 3D.** Next to the 2D floor plan, every report has a 3D view of the workcell in operation, kept in step with the playback controls. Arms carry plates over each move's exact start and duration from the trace. Instruments are tinted by type (the same colours as the 2D views) and glow while they run, plates take their workflow's colour, and the view follows your light or dark theme. Drag to orbit, scroll or pinch to zoom. The layout is automatic: each arm stands in a ring of the instruments it reaches, handoffs sit between arms, and separate lines sit side by side. For live runs, the speed menu goes down to 1 s/s so you can watch a single move; at 60 s/s a 10 s move is a blink with a trail.
 
 ## Live mode: just-in-time dispatch
 

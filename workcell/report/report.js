@@ -524,7 +524,7 @@
     scrub.setAttribute("aria-valuenow", Math.floor(S.t));
     $("#tnow").textContent = LIVE ? `t = ${hms(S.t)} / ${hms(T)}` : `t = ${Math.floor(S.t)} / ${T} min`;
     updateFloor(S.t, animate);
-    if (lab3d) lab3d.update(S.t);
+    lab3dDo(v => v.update(S.t));
     if (S.playing && S.zoom > 1) follow();
   }
   function follow() {
@@ -729,12 +729,17 @@
     markCompiledForRun();
     autoSpeed();
     for (const p in chips) delete chips[p].dataset.loc;
-    if (lab3d) lab3d.setRun(run);
+    lab3dDo(v => v.setRun(run));
     setTime(Math.min(S.t, P().T));
   }
 
   // ---------------------------------------------------------------- Lab 3D (lab3d.js), built on first sight
   let lab3d = null;
+  // a 3D error drops the card and never stops playback or the other views
+  function lab3dDo(f) {
+    if (!lab3d) return;
+    try { f(lab3d); } catch (err) { lab3d = null; $("#card-lab3d").hidden = true; console.error(err); }
+  }
   function watchLab3d() {
     const card = $("#card-lab3d");
     if (!window.Lab3D || !window.THREE || !window.IntersectionObserver) { card.hidden = true; return; }
@@ -744,6 +749,7 @@
       try {
         lab3d = Lab3D.create($("#lab3d"), {
           instruments: D.instruments,
+          typeColor: type => TYPE_COLOR[type] || "#888888",
           // wfColor with commas: three r128 parses only the comma form of hsl()
           plateColor: p => (plateOwner[p] === undefined ? null : `hsl(${hue(plateOwner[p]).toFixed(1)}, 62%, 52%)`),
         });
@@ -751,8 +757,7 @@
         card.hidden = true;
         return;
       }
-      lab3d.setRun(R());
-      lab3d.update(S.t);
+      lab3dDo(v => { v.setRun(R()); v.update(S.t); });
     });
     io.observe(card);
   }

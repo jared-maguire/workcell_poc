@@ -75,6 +75,18 @@
     const reach = Object.fromEntries(arms.map(a => [a.id, a.reach || others]));
     const reachedBy = {};
     for (const a of arms) for (const id of reach[a.id]) (reachedBy[id] = reachedBy[id] || []).push(a.id);
+    if (arms.length > 1 && arms.every(a => !a.reach)) {
+      // every arm reaches everything (v1 style): one ring, the arms together in the middle
+      const r = Math.max(2.3, SPACING * others.length / (2 * Math.PI));
+      const pos = {}, armOut = {};
+      others.forEach((id, k) => { const a = 2 * Math.PI * k / others.length; pos[id] = [Math.cos(a) * r, Math.sin(a) * r]; });
+      arms.forEach((a, k) => {
+        const ang = 2 * Math.PI * k / arms.length, at = [Math.cos(ang) * 0.6, Math.sin(ang) * 0.6];
+        const far = Math.max(...others.map(id => Math.hypot(pos[id][0] - at[0], pos[id][1] - at[1])));
+        armOut[a.id] = { at, link: far / 2 * 1.02 };
+      });
+      return { pos, arms: armOut, groups: [[...arms.map(a => a.id), ...others]] };
+    }
     const isHandoff = id => (reachedBy[id] || []).length > 1;
     // groups: connected arms (through shared instruments), in instrument order
     const groupOf = {}, groups = [];
@@ -110,9 +122,17 @@
       g.arms.forEach((a, i) => { if (i) x += open * (radius[g.arms[i - 1]] + radius[a]) + 1.2; at[a] = [x, 0]; });
       const shift = x / 2;
       for (const a of g.arms) at[a][0] -= shift;
-      for (const id of g.ids) if (isHandoff(id)) {
-        const ps = reachedBy[id].map(a => at[a]);
-        pos[id] = [ps.reduce((s, p) => s + p[0], 0) / ps.length, ps.reduce((s, p) => s + p[1], 0) / ps.length];
+      // handoffs: at the mean of their arms. A mean that falls on an arm (arms not side by
+      // side, or three arms sharing one) moves out past that arm's circle; handoffs with the
+      // same arms are spread 1 apart along z.
+      const bySet = {};
+      for (const id of g.ids) if (isHandoff(id)) (bySet[reachedBy[id].join(" ")] = bySet[reachedBy[id].join(" ")] || []).push(id);
+      for (const ids of Object.values(bySet)) {
+        const ps = reachedBy[ids[0]].map(a => at[a]);
+        const mx = ps.reduce((s, p) => s + p[0], 0) / ps.length, mz = ps.reduce((s, p) => s + p[1], 0) / ps.length;
+        const onArm = g.arms.find(b => Math.hypot(at[b][0] - mx, at[b][1] - mz) < 1);
+        const z0 = onArm ? radius[onArm] + 1 : 0;
+        ids.forEach((id, k) => { pos[id] = [mx, mz + z0 + (onArm ? k : k - (ids.length - 1) / 2)]; });
       }
       for (const a of g.arms) {
         // free angular intervals: the circle minus a GAP around each handoff direction

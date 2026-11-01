@@ -170,3 +170,37 @@ def test_layout_separate_lines(tmp_path):
     for i, a in enumerate(boxes):
         for b in boxes[i + 1:]:
             assert a[1] < b[0] or b[1] < a[0] or a[3] < b[2] or b[3] < a[2]
+
+
+def _arm(id, reach):
+    return {"id": id, "type": "arm", "nests": [], "reach": reach}
+
+
+def _inst(id, type="thermocycler"):
+    return {"id": id, "type": type, "nests": [{"id": id, "capacity": 1}], "reach": None}
+
+
+def test_layout_two_handoffs_between_one_pair(tmp_path):
+    insts = [_arm("a1", ["s", "t", "h1", "h2"]), _arm("a2", ["u", "v", "h1", "h2"]),
+             _inst("s", "storage"), _inst("t"), _inst("u"), _inst("v"),
+             _inst("h1", "handoff"), _inst("h2", "handoff")]
+    r = _layout_check(insts, tmp_path)
+    assert r["far"] == [] and r["close"] >= 0.9
+
+
+def test_layout_three_arms_in_a_row(tmp_path):
+    insts = [_arm("a1", ["s", "h12"]), _arm("a2", ["t", "h12", "h23"]), _arm("a3", ["u", "h23", "h13"]),
+             _inst("s", "storage"), _inst("t"), _inst("u"), _inst("h12", "handoff"), _inst("h23", "handoff")]
+    insts[0]["reach"].append("h13")
+    insts.append(_inst("h13", "handoff"))
+    r = _layout_check(insts, tmp_path)
+    L = r["L"]
+    arm_close = min(((L["pos"][i][0] - a["at"][0]) ** 2 + (L["pos"][i][1] - a["at"][1]) ** 2) ** 0.5
+                    for i in L["pos"] for a in L["arms"].values())
+    assert r["far"] == [] and r["close"] >= 0.9 and arm_close >= 0.5
+
+
+def test_layout_several_arms_without_reach(tmp_path):
+    insts = [_arm("a1", None), _arm("a2", None), _inst("s", "storage"), _inst("t"), _inst("u")]
+    r = _layout_check(insts, tmp_path)
+    assert r["far"] == [] and r["close"] >= 0.9
