@@ -60,6 +60,7 @@ def test_state_carried_plate(libprep, tmp_path):
         assert before == {"at": m["src"]}
     assert mid["arm"] == m["arm"] and 0 < mid["u"] < 1
     assert after == {"at": m["dst"]}
+    assert js(f"{{ const tl = {TL}, m = tl.moves[0]; return M.stateAt(tl, D.runs[0].initial_locations, m.t1).rest[m.arm] === m.dst; }}", d, tmp_path)
 
 
 def test_state_busy(libprep, tmp_path):
@@ -103,7 +104,7 @@ def test_state_empty_run(tmp_path):
     d = {"runs": [{"alarm": None, "blocks": [], "initial_locations": {"P1": "store1"}}],
          "instruments": [{"id": "store1", "type": "storage", "nests": []}]}
     tl, st = js(f"[{TL}.T, M.stateAt({TL}, D.runs[0].initial_locations, 100)]", d, tmp_path)
-    assert tl == 0 and st == {"plates": {"P1": {"at": "store1"}}, "arms": {}, "busy": {}}
+    assert tl == 0 and st == {"plates": {"P1": {"at": "store1"}}, "arms": {}, "rest": {}, "busy": {}}
 
 
 def test_state_is_pure(libprep, tmp_path):

@@ -39,14 +39,15 @@
     return { instr, moves, T, passive };
   }
 
-  // Where every plate is at time t, which arms are carrying what, and which instruments run.
+  // At time t: where every plate is, what each arm carries (`arms`) or where it last put a
+  // plate down (`rest`, nest id), and which instruments are running (`busy`).
   function stateAt(tl, initialLocations, t) {
     const plates = {};
     for (const [p, nest] of Object.entries(initialLocations || {})) plates[p] = { at: nest };
-    const arms = {};
+    const arms = {}, rest = {};
     for (const m of tl.moves) {
       if (m.t0 > t) break;
-      if (m.t1 <= t) plates[m.plate] = { at: m.dst };
+      if (m.t1 <= t) { plates[m.plate] = { at: m.dst }; rest[m.arm] = m.dst; }
       else {
         const carry = { arm: m.arm, src: m.src, dst: m.dst, u: (t - m.t0) / (m.t1 - m.t0) };
         plates[m.plate] = carry;
@@ -58,14 +59,14 @@
       if (i.t0 > t) break;
       if (i.op !== "move" && i.t1 > i.t0 && t < i.t1 && !tl.passive.has(i.instrument)) busy.add(i.instrument);
     }
-    return { plates, arms, busy };
+    return { plates, arms, rest, busy };
   }
 
   // Automatic floor layout (the workcell file has no positions). Arms sharing handoffs form a
   // group (a line); in a group the arms stand in a row along x, each handoff at the mean of
   // its arms, and each arm's other instruments on a circle around it, leaving a gap toward
   // every handoff. Groups are stacked along z.
-  const GAP = 0.55 * Math.PI;       // the opening toward each handoff
+  const GAP = 0.6 * Math.PI;        // the opening toward each handoff
   const SPACING = 0.95;             // min distance between neighbouring instruments on a circle
 
   function layout(instruments) {
@@ -102,10 +103,11 @@
         const avail = 2 * Math.PI - Math.min(k, 3) * GAP;
         radius[a] = Math.max(2.3, SPACING * (own[a].length + 1) / avail);
       }
-      // arms in a row; neighbours far enough apart that their circles keep clear
-      const at = {};
+      // arms in a row; the circles open toward each other, so neighbours can overlap them by
+      // the depth of the opening and still keep their instruments 1.2 apart
+      const at = {}, open = Math.cos(GAP / 2);
       let x = 0;
-      g.arms.forEach((a, i) => { if (i) x += radius[g.arms[i - 1]] + radius[a] + 0.6; at[a] = [x, 0]; });
+      g.arms.forEach((a, i) => { if (i) x += open * (radius[g.arms[i - 1]] + radius[a]) + 1.2; at[a] = [x, 0]; });
       const shift = x / 2;
       for (const a of g.arms) at[a][0] -= shift;
       for (const id of g.ids) if (isHandoff(id)) {

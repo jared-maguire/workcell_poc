@@ -123,3 +123,10 @@ def test_three_inlined(session):
     html = build_report(session)
     assert 'const e="128"' in html and "Lab3DModel" in html and "Lab3D" in html
     assert not re.search(r'(src|href)\s*=\s*["\']https?://', html)
+
+
+def test_lab3d_card_and_speeds(session):
+    from workcell.report.build import _HERE
+    html = build_report(session)
+    assert 'id="card-lab3d"' in html and 'id="lab3d"' in html
+    assert "[1, 2, 5, 10, 30, 60, 120, 300, 600]" in (_HERE / "report.js").read_text()
