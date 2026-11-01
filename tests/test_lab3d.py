@@ -116,3 +116,56 @@ def test_state_is_pure(libprep, tmp_path):
         return [[fresh.plates, busy(fresh)], [again.plates, busy(again)]];
     }}""", d, tmp_path)
     assert a == b
+
+
+def _layout_check(insts, tmp_path):
+    return js("""{
+        const L = M.layout(D);
+        const reach = {};
+        for (const a of D.filter(i => i.type === "arm"))
+            reach[a.id] = a.reach || D.filter(i => i.type !== "arm").map(i => i.id);
+        const far = [];
+        for (const [a, ids] of Object.entries(reach)) for (const id of ids) {
+            const [x, z] = L.pos[id], [ax, az] = L.arms[a].at;
+            if (Math.hypot(x - ax, z - az) > 2 * L.arms[a].link + 1e-9) far.push([a, id]);
+        }
+        const ids = Object.keys(L.pos); let close = Infinity;
+        for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++)
+            close = Math.min(close, Math.hypot(L.pos[ids[i]][0] - L.pos[ids[j]][0], L.pos[ids[i]][1] - L.pos[ids[j]][1]));
+        return { L, far, close };
+    }""", insts, tmp_path)
+
+
+def test_layout_two_arm(tmp_path):
+    from workcell.report.build import instruments_data
+    insts = instruments_data(load_workcell(EXAMPLES / "libprep_2arm.yaml"))
+    r = _layout_check(insts, tmp_path)
+    L = r["L"]
+    assert set(L["pos"]) == {i["id"] for i in insts if i["type"] != "arm"}
+    dist = lambda a: ((L["pos"]["ho1"][0] - L["arms"][a]["at"][0]) ** 2 + (L["pos"]["ho1"][1] - L["arms"][a]["at"][1]) ** 2) ** 0.5
+    assert abs(dist("arm1") - dist("arm2")) < 0.01
+    assert r["far"] == [] and r["close"] >= 0.9
+    assert len(L["groups"]) == 1
+
+
+def test_layout_single_arm(workcell_small, tmp_path):
+    from workcell.report.build import instruments_data
+    insts = instruments_data(workcell_small)
+    r = _layout_check(insts, tmp_path)
+    assert set(r["L"]["pos"]) == {i["id"] for i in insts if i["type"] != "arm"}
+    assert r["far"] == [] and r["close"] >= 0.9
+
+
+def test_layout_separate_lines(tmp_path):
+    from workcell.report.build import instruments_data
+    insts = instruments_data(load_workcell(EXAMPLES / "libprep_10k.yaml"))
+    r = _layout_check(insts, tmp_path)
+    L = r["L"]
+    assert len(L["groups"]) == 4 and r["far"] == [] and r["close"] >= 0.9
+    boxes = []
+    for g in L["groups"]:
+        pts = [L["pos"][i] for i in g if i in L["pos"]] + [L["arms"][i]["at"] for i in g if i in L["arms"]]
+        boxes.append((min(p[0] for p in pts), max(p[0] for p in pts), min(p[1] for p in pts), max(p[1] for p in pts)))
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            assert a[1] < b[0] or b[1] < a[0] or a[3] < b[2] or b[3] < a[2]

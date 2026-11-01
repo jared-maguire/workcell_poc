@@ -79,15 +79,19 @@ def _run(res: RunResult) -> dict:
     }
 
 
-def report_data(session: Session) -> dict:
-    wc, batch = session.workcell, session.batch
+def instruments_data(wc) -> list[dict]:
     nests: dict[str, list[dict]] = {}
     for n in wc.nests().values():
         nests.setdefault(n.instrument, []).append({"id": n.id, "capacity": n.capacity})
+    return [{"id": i.id, "type": i.type, "nests": nests.get(i.id, []),
+             "reach": sorted(i.reach) if i.reach is not None else None}
+            for i in wc.instruments.values()]
+
+
+def report_data(session: Session) -> dict:
+    wc, batch = session.workcell, session.batch
     return {
-        "instruments": [{"id": i.id, "type": i.type, "nests": nests.get(i.id, []),
-                         "reach": sorted(i.reach) if i.reach is not None else None}
-                        for i in wc.instruments.values()],
+        "instruments": instruments_data(wc),
         "workflows": [{"id": wf.id, "name": wf.name, "args": _jsonable(wf.args),
                        "owned": sorted(wf.owned), "borrowed": sorted(wf.borrowed)}
                       for wf in batch.workflows],
