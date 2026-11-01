@@ -1,6 +1,7 @@
 """Just-in-time dispatcher (spec docs/superpowers/specs/2026-10-31-jit-dispatch-design.md):
-start whatever can start, the block with the most remaining work first; park a plate when
-its next stop is full, or (idle rule) when it has sat on an instrument too long."""
+start whatever can start — workflows already under way first, then the most remaining work;
+park a plate when its next stop is full, or (idle rule) when it has sat on an instrument too
+long."""
 from __future__ import annotations
 
 import dataclasses
@@ -40,13 +41,17 @@ class _Dispatch(_Greedy):
         self.actual = actual
         self.spot: dict[str, str] = {}          # parked removal id -> parking spot
         self.idle_since: dict[str, int] = {}    # plate -> end of its last block
+        self.under_way: set[str] = set()        # workflows with a started block
 
     # -- ordering and binding -------------------------------------------------
     def _current(self, blk: Block) -> Block:
         return blk                      # parked moves are rewritten once bound (_try_bind)
 
     def _ready(self) -> list[Block]:
-        return sorted(super()._ready(), key=lambda b: (-self.rank[b.id], self.order[b.id]))
+        """Workflows under way first (a new one would take shared plates and instruments
+        they wait for), then the most remaining work, then batch order."""
+        return sorted(super()._ready(), key=lambda b: (b.workflow not in self.under_way,
+                                                       -self.rank[b.id], self.order[b.id]))
 
     def _bound(self, blk: Block, new: dict[str, str]) -> Block:
         concrete = blk.bind({**self.bindings[blk.workflow], **new})
@@ -79,6 +84,7 @@ class _Dispatch(_Greedy):
                 for i, d in zip(blk.instructions, self.actual(blk))])
         for p in blk.plates:
             self.idle_since.pop(p, None)
+        self.under_way.add(blk.workflow)
         super()._start(blk, new_bindings, t)
 
     def _finish(self, bid: str) -> None:

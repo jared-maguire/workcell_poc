@@ -104,24 +104,6 @@
   const at = v => (LIVE ? hms(v) : String(v));
   const badge = s => `<span class="badge ${esc(s)}" title="${esc(STATUS_HINT[s] || s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
   const pct = (x, T) => (100 * x / T) + "%";
-  function replanLabel(e) {
-    const what = (compiledById[e.trigger] && compiledById[e.trigger].label) || e.trigger;
-    if (e.reason === "horizon") return `extended the plan at ${hms(e.time)} (planning window)`
-      + (e.adopted ? "" : ` — failed (${e.status})`);
-    if (e.reason === "idle_hold") {
-      const idle = `a plate would idle ${mss(e.idle_before)} past the ${mss(LIVE.max_idle_hold)} limit`;
-      if (e.adopted) return `re-planned at ${hms(e.time)} — ${idle}; `
-        + (e.idle_after ? `${mss(e.idle_after)} over after re-planning` : "fixed") + `; finish ${hms(e.makespan_before)} → ${hms(e.makespan_after)}`;
-      if (e.status === "not_worth_it") return `kept plan at ${hms(e.time)} — ${idle}; re-planning could not reduce it`;
-      return `re-plan failed (${e.status}) at ${hms(e.time)} — ${idle}`;
-    }
-    if (e.adopted) return `re-planned at ${hms(e.time)} — ${what} ran ${mss(e.delay)} long; `
-      + `projected push ${mss(e.push)} > ${mss(LIVE.threshold)}; finish ${hms(e.makespan_before)} → ${hms(e.makespan_after)}`
-      + (e.reassigned ? `, reassigned ${e.reassigned}` : "");
-    if (e.status === "not_worth_it") return `kept plan at ${hms(e.time)} — ${what} ran ${mss(e.delay)} long; `
-      + `re-plan would save only ${mss(e.makespan_before - e.makespan_after)}`;
-    return `re-plan failed (${e.status}) at ${hms(e.time)} — ${what} ran ${mss(e.delay)} long`;
-  }
   function niceStep(raw) {
     const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1e-9))));
     for (const m of [1, 2, 5, 10]) if (m * p >= raw) return Math.max(1, m * p);
@@ -169,8 +151,6 @@
     const markers = [];
     if (run.deadlock) markers.push({ time: run.deadlock.time, label: `deadlock t=${run.deadlock.time}` });
     if (run.alarm) markers.push({ time: run.alarm.time, label: `alarm t=${at(run.alarm.time)}` });
-    if (LIVE) for (const e of LIVE.replans) markers.push({ time: e.time, label: replanLabel(e),
-      cls: e.adopted ? "rp-adopted" : e.status === "not_worth_it" ? "rp-kept" : "rp-failed" });
     return (run._p = { T, byId, ghosts, cycle, plateMoves, instBlocks, markers });
   }
 
@@ -208,9 +188,8 @@
       ["waiting (total)", r => dur(r.stats.total_waiting)],
       ["waiting (mean)", r => dur(r.stats.mean_waiting, 1)],
       ["blocked (total)", r => dur(Object.values(r.stats.blocked || {}).reduce((a, b) => a + b, 0))],
-      ["planner status", r => (LIVE ? `live CP-SAT (${LIVE.stats.replans} re-plans)` : esc(SOLVER_LABEL[r.status] || r.status))],
-      ["solve time", r => (LIVE ? `${LIVE.solve_seconds.initial.toFixed(1)} s initial + ${LIVE.solve_seconds.replans.toFixed(1)} s re-plans`
-                                : `${Number(r.stats.solve_seconds).toFixed(2)} s`)],
+      ["planner status", r => (LIVE ? "live, dispatched just in time" : esc(SOLVER_LABEL[r.status] || r.status))],
+      ["solve time", r => `${Number(r.stats.solve_seconds).toFixed(2)} s`],
       ...(LIVE ? [] : [["lock waits", r => String(r.stats.lock_waits)]]),
       ["alarm", r => (r.stats.alarm ? esc(r.stats.alarm) : "—")],
     ];
@@ -218,17 +197,12 @@
       const L = LIVE.stats;
       rows.push(
         ["seed", () => String(L.seed)],
-        ["re-plan threshold", () => mss(L.threshold)],
-        ["re-plans", () => `${L.replans} (${L.adopted_replans} adopted / ${L.not_worth_it} not worth it / ${L.failed_replans} failed)`],
-        ["reassignments", () => String(L.reassignments)],
         ["total delay", () => hms(L.total_delay)],
-        ["planned makespan", () => (L.planned_makespan == null ? "— (rolling window)" : hms(L.planned_makespan))],
-        ["planning", () => `grid ${LIVE.grid || 1} s · ${LIVE.window ? `window ${LIVE.window / 3600} h` : "whole batch"}`],
+        ["forecast makespan", () => (L.planned_makespan == null ? "— (deadlock)" : hms(L.planned_makespan))],
         ["actual makespan", () => hms(L.actual_makespan)]);
       if (L.max_idle_hold) rows.push(
         ["idle-hold limit", () => mss(L.max_idle_hold)],
         ["parks", () => String(L.parks)],
-        ["idle-hold re-plans", () => String(L.idle_replans)],
         ["idle-hold violations", () => L.idle_violations ? `${L.idle_violations} (worst ${mss(L.worst_idle)})` : "0"]);
     }
     const head = `<thead><tr><th></th>${runs.map((r, i) => `<th data-run="${i}">${esc(r.mode)}</th>`).join("")}</tr></thead>`;

@@ -176,8 +176,8 @@ def validate_plan(plan: Plan, batch: CompiledBatch, check_durations: bool = True
             errors.append(f"plate {g.plate} idles {g.length}s in {g.nest} between {g.prev} "
                           f"and {g.next} (limit {max_idle_hold}s)")
 
-    # completeness (a partial plan covers only its planning window)
-    if plan.finished and not plan.partial:
+    # completeness
+    if plan.finished:
         for b in batch.all_blocks():
             if b.id not in plan.start:
                 errors.append(f"block {b.id} is not scheduled")

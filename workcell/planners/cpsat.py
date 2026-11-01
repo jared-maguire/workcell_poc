@@ -11,16 +11,13 @@ import tempfile
 import time
 import warnings
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from ortools.sat.python import cp_model
 
-from workcell.idle import hold_chains
-from workcell.ir import Block, CompiledBatch, resolve
-from workcell.compiler import AmbiguousRoute, route
-from workcell.parking import (park_durations, park_pair, park_pair_instructions,
-                              parking_spots, plan_parks)
+from workcell.compiler import route
+from workcell.ir import CompiledBatch, resolve
 from workcell.plan import Plan, bind_batch
 from workcell.planners.greedy import plan_greedy
 
@@ -29,62 +26,12 @@ Hint = Literal["greedy", "serial"]
 
 _STATUS = {"OPTIMAL": "optimal", "FEASIBLE": "feasible", "INFEASIBLE": "infeasible",
            "UNKNOWN": "no_solution", "CRASHED": "no_solution"}
-PARK_COST = 600     # objective units per park (100 = 1 s of makespan)
 _ATTEMPTS = 3       # ruling R7: child solves tried before giving up as "CRASHED"
 
 
 def _var(name: str) -> str | None:
     """The `?var` a name refers to, or None for a concrete name."""
     return name.partition(".")[0] if name.startswith("?") else None
-
-
-@dataclass
-class ReplanState:
-    """What has already happened when re-planning at time `now`: `fixed` maps each done or
-    running block to its (start, end); `bindings` are var bindings that must stay; `hint`
-    holds suggested starts and `hint_bindings` suggested var bindings (when either is
-    non-empty they replace `plan_cpsat`'s own `hint`)."""
-    now: int
-    fixed: dict[str, tuple[int, int]]
-    bindings: dict[str, dict[str, str]]
-    hint: dict[str, int] = field(default_factory=dict)
-    hint_bindings: dict[str, dict[str, str]] = field(default_factory=dict)
-    # idle hold: removal block id -> parking spot (None = direct) decisions that must stay,
-    # and the current plan's decisions (hints and churn)
-    parks: dict[str, str | None] = field(default_factory=dict)
-    hint_parks: dict[str, str | None] = field(default_factory=dict)
-    # bound blocks to take as given: started park blocks and their rewritten removals
-    blocks: dict[str, Block] = field(default_factory=dict)
-    effort: float = 1.0     # budget multiplier (raised when a plan extension keeps failing)
-
-
-def _movers(wc, instructions) -> set[str]:
-    """The arms and handoff spots an instruction list uses."""
-    return {i.instrument for i in instructions if i.instrument in wc.instruments
-            and wc.instruments[i.instrument].type in ("arm", "handoff")}
-
-
-def _in_window(batch: CompiledBatch, state: ReplanState | None,
-               window: int | None) -> set[str]:
-    """Block ids a model includes: all, or (with `window` seconds) the fixed blocks plus the
-    unstarted ones whose earliest start — deps only, from now, planned durations — is before
-    now + window (so every included block's deps are included or fixed)."""
-    ids = {b.id for b in batch.all_blocks()}
-    if not window:
-        return ids
-    fixed = state.fixed if state else {}
-    now = state.now if state else 0
-    inc, ready = set(fixed), {b: e for b, (_, e) in fixed.items()}
-    for b in batch.all_blocks():                # compile order is topological per workflow
-        if b.id in fixed:
-            continue
-        if any(d not in ready for d in b.deps):
-            continue
-        es = max([now] + [ready[d] for d in b.deps])
-        if es < now + window:
-            inc.add(b.id)
-            ready[b.id] = es + _longest(b)
-    return inc & ids | (set(fixed) & ids)
 
 
 def _longest(b) -> int:
@@ -133,61 +80,13 @@ def serial_hint(batch: CompiledBatch) -> tuple[dict[str, int], dict[str, dict[st
 
 
 class _Model:
-    def __init__(self, batch: CompiledBatch, state: ReplanState | None = None,
-                 max_idle_hold: int | None = None, soft: bool = False, grid: int = 1,
-                 window: int | None = None):
+    def __init__(self, batch: CompiledBatch):
         self.batch = batch
         self.m = cp_model.CpModel()
-        self.g = grid       # seconds per model time unit: durations round up, fixed times down
-        self.window = window
-        self.inc = _in_window(batch, state, window)
-        blocks = [b for b in batch.all_blocks() if b.id in self.inc]
-        self.blocks = blocks
-        self.partial = len(blocks) < len(batch.all_blocks())
-        fixed = ({b: (s // grid, e // grid) for b, (s, e) in state.fixed.items()}
-                 if state else {})
-        self.state, self.limit, self.soft = state, max_idle_hold or None, soft
-        self.over = dict(state.blocks) if state else {}
-        # idle hold: one stay per chain; its removal may be parked at any spot
-        self.chains = ([c for c in hold_chains(batch) if all(x in self.inc for x in c.blocks)]
-                       if self.limit else [])
-        self.removals = {c.blocks[-1]: c for c in self.chains}
-        self.spots = parking_spots(batch.workcell) if self.limit else []
-        self.pdur = {}
-        for d in sorted(self.removals):
-            if batch.block(d).variants or d in self.over:
-                continue            # route depends on a binding (spec), or already parked
-            try:
-                for sp in self.spots:
-                    self.pdur[d, sp] = tuple(map(self.q, park_durations(batch, batch.block(d), sp)))
-            except AmbiguousRoute:
-                for sp in self.spots:
-                    self.pdur.pop((d, sp), None)
-        extra = sum(max((a + b for (dd, _), (a, b) in self.pdur.items() if dd == d), default=0)
-                    for d in self.removals)
-        # interval size per block: actual (end - start) for fixed blocks, else planned duration
-        self.size = {b.id: fixed[b.id][1] - fixed[b.id][0] if b.id in fixed
-                     else self.q(self.over[b.id].duration) if b.id in self.over
-                     else self.q(b.duration)
-                     for b in blocks}
-        if state is None:
-            horizon = sum(self.q(_longest(b)) for b in blocks) + extra
-            bounds = {b.id: (0, horizon) for b in blocks}
-        else:
-            now = self.q(state.now)
-            horizon = (max([now] + [e for _, e in fixed.values()])
-                       + sum(self.q(_longest(b)) for b in blocks if b.id not in fixed) + extra)
-            bounds = {b.id: (fixed[b.id][0],) * 2 if b.id in fixed else (now, horizon)
-                  for b in blocks}
-        self.fixed = fixed
-        # with a window, stays/borrows closed outside it stay open until `open_end`; blocks
-        # that need such a nest can still be placed after it (the next window re-plans them)
-        self.open_end = horizon
-        if window:          # open stays hold their nest to the window's end, not the horizon
-            self.open_end = min(horizon, (self.q(state.now) if state else 0) + self.q(window))
-            horizon *= 2
-            bounds = {b: (lo, hi if lo == hi else horizon) for b, (lo, hi) in bounds.items()}
-        self.start = {b.id: self.m.NewIntVar(*bounds[b.id], f"s[{b.id}]") for b in blocks}
+        self.blocks = blocks = batch.all_blocks()
+        self.size = {b.id: b.duration for b in blocks}
+        horizon = sum(_longest(b) for b in blocks)
+        self.start = {b.id: self.m.NewIntVar(0, horizon, f"s[{b.id}]") for b in blocks}
         self.end = {b.id: self.start[b.id] + self.size[b.id] for b in blocks}
         self.x = {(wf.id, var, cand): self.m.NewBoolVar(f"x[{wf.id},{var},{cand}]")
                   for wf in batch.workflows for var, cands in wf.variables.items()
@@ -195,36 +94,19 @@ class _Model:
         for wf in batch.workflows:
             for var, cands in wf.variables.items():
                 self.m.AddExactlyOne(self.x[wf.id, var, c] for c in cands)
-        if state is not None:
-            for wf_id, binds in state.bindings.items():
-                for var, cand in binds.items():
-                    self.m.Add(self.x[wf_id, var, cand] == 1)
         self.horizon = horizon
-        self._variants(fixed)
-        self._parks(fixed)
+        self._variants()
         self._dependencies()
         self._locks()
         self._stays()
         self._borrows()
-        self._gaps()
 
-    def _open_end(self, start):
-        """End of a stay/borrow closed outside the window: `open_end` (the window's end), or
-        its own start if it begins later (such blocks are cut from the plan anyway)."""
-        e = self.m.NewIntVar(0, 2 * self.horizon, "")
-        self.m.AddMaxEquality(e, [start, self.open_end])
-        return e
-
-    def q(self, seconds: int) -> int:
-        """Seconds -> model units, rounded up (durations, `now`)."""
-        return -(-seconds // self.g)
-
-    def _variants(self, fixed):
+    def _variants(self):
         """Route-variant blocks: one literal per variant (its bindings), and a size that is
-        the chosen variant's duration (actual size when fixed)."""
+        the chosen variant's duration."""
         self.vlits: dict[str, dict[tuple, object]] = {}
         for b in self.blocks:
-            if not b.variants or b.id in self.over:
+            if not b.variants:
                 continue
             lits = {}
             for key in b.variants:
@@ -234,12 +116,10 @@ class _Model:
                     lit = self._and(lit, x)
                 lits[key] = lit
             self.vlits[b.id] = lits
-            if b.id in fixed:
-                continue
-            sz = self.m.NewIntVar(0, 2 * self.horizon, f"size[{b.id}]")
-            self.m.Add(sz == sum(self.q(sum(i.duration for i in b.variants[k])) * lit
+            sz = self.m.NewIntVar(0, self.horizon, f"size[{b.id}]")
+            self.m.Add(sz == sum(sum(i.duration for i in b.variants[k]) * lit
                                  for k, lit in lits.items()))
-            end = self.m.NewIntVar(0, 2 * self.horizon, f"end[{b.id}]")
+            end = self.m.NewIntVar(0, self.horizon, f"end[{b.id}]")
             self.m.Add(end == self.start[b.id] + sz)
             self.size[b.id], self.end[b.id] = sz, end
 
@@ -248,85 +128,6 @@ class _Model:
         self.m.AddBoolAnd([a, b]).OnlyEnforceIf(c)
         self.m.AddBoolOr([a.Not(), b.Not()]).OnlyEnforceIf(c.Not())
         return c
-
-    def _parks(self, fixed):
-        """Per removal D: literals park[D][spot] (at most one), the park block's start/size/
-        end, D's size (direct or from the spot), and leave[D], when the plate leaves its nest
-        (the park start if parked, else D's start). Started removals and parks are forced
-        by `state.parks` (a started removal with no entry stays direct)."""
-        m, big = self.m, 2 * self.horizon
-        now = self.q(self.state.now) if self.state else 0
-        forced = self.state.parks if self.state else {}
-        self.park, self.parked, self.leave = {}, {}, {}
-        self.kstart, self.ksize, self.kend = {}, {}, {}
-        for d in sorted(self.removals):
-            k = f"{d}.park"
-            if d in self.over and k in fixed:       # parked already: it left at the park start
-                self.park[d], self.leave[d] = {}, m.NewConstant(fixed[k][0])
-                if d not in fixed:      # (both started: rounding could make this impossible)
-                    m.Add(self.start[d] >= self.q(self.state.fixed[k][1]))
-                continue
-            lits = {sp: m.NewBoolVar(f"park[{d},{sp}]") for sp in self.spots
-                    if (d, sp) in self.pdur}
-            parked = m.NewBoolVar(f"parked[{d}]")
-            m.Add(parked == sum(lits.values()))
-            choice = forced[d] if d in forced else (None if d in fixed else "?")
-            if choice != "?":
-                if choice is not None and choice not in lits:
-                    raise ValueError(f"forced park of {d} at unknown spot {choice!r}")
-                for sp, lit in lits.items():
-                    m.Add(lit == int(sp == choice))
-            if d not in fixed and lits:
-                sz = m.NewIntVar(0, big, f"size[{d}]")
-                m.Add(sz == self.size[d] * (1 - parked)
-                      + sum(self.pdur[d, sp][1] * lit for sp, lit in lits.items()))
-                end = m.NewIntVar(0, big, f"end[{d}]")
-                m.Add(end == self.start[d] + sz)
-                self.size[d], self.end[d] = sz, end
-            if k in fixed:
-                ks = m.NewIntVar(fixed[k][0], fixed[k][0], f"s[{k}]")
-                ksz = fixed[k][1] - fixed[k][0]
-            else:
-                ks = m.NewIntVar(0, big, f"s[{k}]")
-                ksz = m.NewIntVar(0, big, f"size[{k}]")
-                m.Add(ksz == sum(self.pdur[d, sp][0] * lit for sp, lit in lits.items()))
-                m.Add(ks >= now).OnlyEnforceIf(parked)
-                m.Add(ks == self.start[d]).OnlyEnforceIf(parked.Not())     # unused: pinned
-            ke = m.NewIntVar(0, big, f"end[{k}]")
-            m.Add(ke == ks + ksz)
-            leave = m.NewIntVar(0, big, f"leave[{d}]")
-            m.Add(leave == ks).OnlyEnforceIf(parked)
-            m.Add(leave == self.start[d]).OnlyEnforceIf(parked.Not())
-            for dep in self.batch.block(d).deps:
-                m.Add(ks >= self.end[dep]).OnlyEnforceIf(parked)
-            m.Add(self.start[d] >= ke).OnlyEnforceIf(parked)
-            self.park[d], self.parked[d], self.leave[d] = lits, parked, leave
-            self.kstart[d], self.ksize[d], self.kend[d] = ks, ksz, ke
-
-    def _gaps(self):
-        """Idle-hold gaps of every chain: consecutive blocks, and the last use to leave[D].
-        Hard (gap <= limit) unless `soft`, then excess >= gap - limit is penalized."""
-        self.gaps, self.excess, self.park_delay = [], [], []
-        for c in self.chains:
-            d = c.blocks[-1]
-            if self.park.get(d):            # a parked plate should leave right away
-                pd = self.m.NewIntVar(0, 2 * self.horizon, f"park_delay[{d}]")
-                self.m.Add(pd >= self.leave[d] - self.end[c.blocks[-2]]).OnlyEnforceIf(
-                    self.parked[d])
-                self.park_delay.append(pd)
-            for a, b in zip(c.blocks, c.blocks[1:]):
-                nxt = self.leave[d] if b == d else self.start[b]
-                self.m.Add(nxt >= self.end[a])
-                gap = nxt - self.end[a]
-                self.gaps.append(gap)
-                # in grid units, a real gap can exceed the model's by up to grid - 1 s
-                limit = (self.limit - self.g + 1) // self.g if self.g > 1 else self.limit
-                if self.soft:
-                    ex = self.m.NewIntVar(0, 2 * self.horizon, f"excess[{a}>{b}]")
-                    self.m.Add(ex >= gap - limit)
-                    self.excess.append(ex)
-                else:
-                    self.m.Add(gap <= limit)
 
     def _choices(self, wf_id: str, name: str):
         """Yield (concrete name, presence literal or None) for each way `name` can resolve."""
@@ -351,69 +152,26 @@ class _Model:
 
     def _locks(self):
         """NoOverlap per concrete instrument and per plate over the blocks that lock them."""
-        wc = self.batch.workcell
         groups = defaultdict(list)
-        for bid, blk in sorted(self.over.items()):  # given blocks: their own instruments
-            if bid not in self.start:               # a started park block (not compiled)
-                s, e = self.fixed[bid]
-                for name in sorted(blk.instruments | blk.plates):
-                    groups[name].append(self.m.NewIntervalVar(s, e - s, e, f"{bid}@{name}"))
         for b in self.blocks:
-            if b.id in self.over:
-                for name in sorted(self.over[b.id].instruments | b.plates):
-                    groups[name].append(self._interval(
-                        self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{name}"))
-                continue
             if b.id in self.vlits:          # route variants: each variant's own instruments
                 for key, lit in sorted(self.vlits[b.id].items()):
                     for name in sorted({i.instrument for i in b.variants[key]}):
                         groups[name].append(self._interval(
                             self.start[b.id], self.end[b.id], lit, self.size[b.id],
                             f"{b.id}@{name}:{key}"))
-                for plate in sorted(b.plates):
-                    groups[plate].append(self._interval(
-                        self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{plate}"))
-                continue
-            concrete = {i for i in b.instruments if _var(i) is None}
-            src_only = None
-            if self.park.get(b.id):
-                (mv,) = b.moves
-                if wc.nest_owner(mv.src) != wc.nest_owner(mv.dst):
-                    src_only = wc.nest_owner(mv.src)      # held only while going direct
-            for inst in sorted(b.instruments):
-                for name, lit in self._choices(b.workflow, inst):
-                    if lit is not None and name in concrete:
-                        continue      # already locked by the concrete interval
-                    if inst == src_only:
-                        direct = self.parked[b.id].Not()
-                        lit = direct if lit is None else self._and(lit, direct)
-                    groups[name].append(self._interval(
-                        self.start[b.id], self.end[b.id], lit, self.size[b.id], f"{b.id}@{name}"))
-            for sp, lit in sorted(self.park.get(b.id, {}).items()):     # unpark from the spot
-                groups[wc.nest_owner(sp)].append(self._interval(
-                    self.start[b.id], self.end[b.id], lit, self.size[b.id], f"{b.id}@{sp}"))
+            else:
+                concrete = {i for i in b.instruments if _var(i) is None}
+                for inst in sorted(b.instruments):
+                    for name, lit in self._choices(b.workflow, inst):
+                        if lit is not None and name in concrete:
+                            continue      # already locked by the concrete interval
+                        groups[name].append(self._interval(
+                            self.start[b.id], self.end[b.id], lit, self.size[b.id],
+                            f"{b.id}@{name}"))
             for plate in sorted(b.plates):
                 groups[plate].append(self._interval(
                     self.start[b.id], self.end[b.id], None, self.size[b.id], f"{b.id}@{plate}"))
-        for d in sorted(self.removals):                                 # park blocks
-            if not self.park[d]:
-                continue
-            blk, k = self.batch.block(d), f"{d}.park"
-            (mv,) = blk.moves
-            ks, ksz, ke, parked = self.kstart[d], self.ksize[d], self.kend[d], self.parked[d]
-            groups[mv.plate].append(self._interval(ks, ke, parked, ksz, f"{k}@{mv.plate}"))
-            for sp, lit in sorted(self.park[d].items()):    # arms/handoffs on each route
-                there, back = park_pair_instructions(self.batch, blk, sp)
-                for name in sorted(_movers(wc, there)):
-                    groups[name].append(self._interval(ks, ke, lit, ksz, f"{k}@{name}:{sp}"))
-                for name in sorted(_movers(wc, back) - _movers(wc, blk.instructions)):
-                    groups[name].append(self._interval(self.start[d], self.end[d], lit,
-                                                       self.size[d], f"{d}@{name}:{sp}"))
-            for name, lit in self._choices(blk.workflow, wc.nest_owner(mv.src)):
-                pres = parked if lit is None else self._and(lit, parked)
-                groups[name].append(self._interval(ks, ke, pres, ksz, f"{k}@{name}"))
-            for sp, lit in sorted(self.park[d].items()):
-                groups[wc.nest_owner(sp)].append(self._interval(ks, ke, lit, ksz, f"{k}@{sp}"))
         for ivs in groups.values():
             self.m.AddNoOverlap(ivs)
 
@@ -432,18 +190,12 @@ class _Model:
                     chains[mv.plate].append((b, mv))
             for plate, chain in chains.items():
                 for (a, mv), (d, _) in zip(chain, chain[1:]):
-                    if a.id not in self.inc:
-                        continue
-                    if d.id in self.inc:
-                        self.m.Add(self.start[d.id] >= self.end[a.id])
-                        out = self.leave.get(d.id, self.start[d.id])  # parked: leaves at park start
-                    else:                           # removed after the window: open
-                        out = self._open_end(self.start[a.id])
+                    self.m.Add(self.start[d.id] >= self.end[a.id])
                     for nest, lit in self._choices(wf.id, mv.dst):
                         if nest in skip:
                             continue
                         by_nest[nest].append(self._interval(
-                            self.start[a.id], out, lit,
+                            self.start[a.id], self.start[d.id], lit,
                             name=f"stay[{plate}@{nest}:{a.id}]"))
         for nest, ivs in by_nest.items():
             if nests[nest].capacity == 1:
@@ -456,68 +208,25 @@ class _Model:
         for wf in self.batch.workflows:
             for plate in sorted(wf.borrowed):
                 first, last = wf.borrow_span(plate)
-                if first not in self.inc:
-                    continue
-                end = self.end[last] if last in self.inc else self._open_end(self.start[first])
-                spans[plate].append(self._interval(self.start[first], end, None,
+                spans[plate].append(self._interval(self.start[first], self.end[last], None,
                                                    name=f"borrow[{plate}:{wf.id}]"))
         for ivs in spans.values():
             self.m.AddNoOverlap(ivs)
 
     def objective(self, objective: Objective):
-        """Minimize the objective. With an idle-hold limit: 100 x objective + how long parked
-        plates wait before leaving + PARK_COST per park (park only when it is worth it, and
-        then right away); when soft, total excess over the limit comes first. (A total-idle-
-        time term cost ~3 h of planned makespan on 10 PCRs, so it is left out.)"""
-        self.mk = self.m.NewIntVar(0, 2 * self.horizon, "makespan")
+        self.mk = self.m.NewIntVar(0, self.horizon, "makespan")
         self.m.AddMaxEquality(self.mk, list(self.end.values()))
         if objective == "makespan":
-            primary = self.mk
+            self.m.Minimize(self.mk)
         elif objective == "sum_completion":
             done = []
             for wf in self.batch.workflows:
-                c = self.m.NewIntVar(0, 2 * self.horizon, f"done[{wf.id}]")
-                self.m.AddMaxEquality(c, [self.end[b.id] for b in wf.blocks if b.id in self.inc])
+                c = self.m.NewIntVar(0, self.horizon, f"done[{wf.id}]")
+                self.m.AddMaxEquality(c, [self.end[b.id] for b in wf.blocks])
                 done.append(c)
-            primary = sum(done)
+            self.m.Minimize(sum(done))
         else:
             raise ValueError(f"unknown CP-SAT objective {objective!r}")
-        if not self.limit:
-            self.m.Minimize(primary)
-            return
-        total = (100 * primary + sum(self.park_delay)
-                 + PARK_COST * sum(self.parked.values()))
-        if self.soft:
-            total += 200 * self.horizon * (len(self.gaps) + 1) * sum(self.excess)
-        self.m.Minimize(total)
-
-    def churn_objective(self, state: ReplanState, cap: int, weight: int, excess_cap: int = 0):
-        """Ruling R8 phase 2: hold makespan at `cap` (and total idle-hold excess at
-        `excess_cap`) and minimize changes to the current plan — `weight` per binding or park
-        decision that differs from `state.hint_bindings` / `state.hint_parks`, plus the total
-        distance of each unfixed block's start from its `state.hint`."""
-        for e in self.end.values():
-            self.m.Add(e <= cap)
-        if self.excess:
-            self.m.Add(sum(self.excess) <= excess_cap)
-        terms = []
-        for (wf, var, cand), lit in self.x.items():
-            if state.hint_bindings.get(wf, {}).get(var) == cand:
-                terms.append(weight * (1 - lit))
-        for d, lits in sorted(self.park.items()):
-            if d in self.over:
-                continue
-            want = state.hint_parks.get(d)
-            if want is None:
-                terms.append(weight * self.parked[d])
-            elif want in lits:              # a park the model can't make costs nothing to drop
-                terms.append(weight * (1 - lits[want]))
-        for bid, h in sorted(state.hint.items()):
-            if bid in self.start and bid not in state.fixed:
-                d = self.m.NewIntVar(0, 2 * self.horizon, f"dev[{bid}]")
-                self.m.AddAbsEquality(d, self.start[bid] - h // self.g)
-                terms.append(d)
-        self.m.Minimize(sum(terms))
 
     def hint(self):
         """Ruling R6(c): hint from greedy_hotel fifo — compiled block starts and bindings."""
@@ -533,15 +242,7 @@ class _Model:
     def hint_starts(self, starts: dict[str, int]):
         for bid, s in starts.items():
             if bid in self.start:
-                self.m.AddHint(self.start[bid], s // self.g)
-            elif bid.endswith(".park") and bid[:-len(".park")] in self.kstart:
-                self.m.AddHint(self.kstart[bid[:-len(".park")]], s // self.g)
-
-    def hint_parks(self, parks: dict[str, str | None]):
-        """Hint every park literal: 1 only for the removal's hinted spot."""
-        for d, lits in self.park.items():
-            for sp, lit in lits.items():
-                self.m.AddHint(lit, parks.get(d) == sp)
+                self.m.AddHint(self.start[bid], s)
 
     def hint_bindings(self, bindings: dict[str, dict[str, str]]):
         """Hint each listed var's literals: 1 for its hinted candidate, 0 for the others."""
@@ -552,112 +253,33 @@ class _Model:
 
 def plan_cpsat(batch: CompiledBatch, objective: Objective = "makespan",
                time_limit: float = 30.0, hint: Hint | bool | None = True,
-               state: ReplanState | None = None, deterministic: bool = False,
-               max_idle_hold: int | None = None, grid: int = 1,
-               window: int | None = None) -> Plan:
+               deterministic: bool = False) -> Plan:
     """Solve the batch with CP-SAT; status "optimal", "feasible", "infeasible" (proven), or
     "no_solution" (time limit / unknown). An invalid model is a bug and raises RuntimeError.
-
     `hint` warm-starts the solve: "greedy" (or True) from greedy_hotel fifo, "serial" from
-    `serial_hint`, None (or False) not at all. `state` re-plans from the current time: fixed
-    blocks keep their actual (start, end), the rest start at or after `state.now`; its
-    non-empty `hint`/`hint_bindings` replace `hint`. `deterministic` (ruling R5) uses 8
+    `serial_hint`, None (or False) not at all. `deterministic` (ruling R5) uses 8
     interleaved workers, a fixed seed and a deterministic-time limit (`time_limit`) instead
     of wall time, so the same inputs give the same plan in any process; it also solves in a
     child process (ruling R7), retried if it crashes, with status "no_solution" and
-    solver_status "CRASHED" if every attempt does. `max_idle_hold` (seconds) bounds every
-    idle-hold gap, parking plates in a hotel or storage where needed."""
+    solver_status "CRASHED" if every attempt does."""
     t0 = time.perf_counter()
-    model = _Model(batch, state, max_idle_hold, grid=grid, window=window)
+    model = _Model(batch)
     model.objective(objective)
-    if state is not None and (state.hint or state.hint_bindings):
-        model.hint_starts(state.hint)
-        model.hint_bindings(state.hint_bindings)
-        model.hint_parks(state.hint_parks)
-    elif hint is True or hint == "greedy":
+    if hint is True or hint == "greedy":
         model.hint()
     elif hint == "serial":
         starts, bindings = serial_hint(batch)
         model.hint_starts(starts)
         model.hint_bindings(bindings)
-        model.hint_parks({})
     elif hint not in (None, False):
         raise ValueError(f"unknown CP-SAT hint {hint!r}")
-    return _solve_plan(model, time_limit, deterministic, objective, t0)[0]
-
-
-def plan_idle_hold(batch: CompiledBatch, time_limit: float, max_idle_hold: int,
-                   grid: int = 1, window: int | None = None) -> Plan:
-    """Initial live plan under an idle-hold limit, in two deterministic stages of half the
-    budget each: solve without the limit (serial warm start), then with the hard limit warm-
-    started from that plan (a cold start rarely improves on the serial plan). If the hard
-    stage finds nothing, the soft limit (always solvable) is used instead.
-    solver_status is "<stage 1>/<stage 2>"."""
-    t0 = time.perf_counter()
-    first = plan_cpsat(batch, time_limit=time_limit / 2, deterministic=True, hint="serial",
-                       grid=grid, window=window)
-    if not first.finished:
-        return first
-    for soft in (False, True):
-        m = _Model(batch, None, max_idle_hold, soft=soft, grid=grid, window=window)
-        m.objective("makespan")
-        m.hint_starts(first.start)
-        m.hint_bindings(first.bindings)
-        m.hint_parks({})
-        plan, _ = _solve_plan(m, time_limit / 2, True, "makespan", t0)
-        if plan.finished:
-            break
-    plan.solver_status = f"{first.solver_status}/{plan.solver_status}"
-    plan.solve_seconds = time.perf_counter() - t0
-    return plan
-
-
-def replan_cpsat(batch: CompiledBatch, state: ReplanState, time_limit: float = 2.0,
-                 reassign_weight: int = 600, max_idle_hold: int | None = None,
-                 grid: int = 1, window: int | None = None) -> Plan:
-    """Ruling R8: a low-churn re-plan. Phase 1 minimizes makespan from `state`; phase 2 holds
-    that makespan and minimizes churn against `state.hint`/`state.hint_bindings` (see
-    `_Model.churn_objective`). Both are deterministic and isolated, each with `time_limit`.
-    If phase 2 finds nothing, phase 1's plan is returned. solver_status is "<p1>/<p2>".
-    With `max_idle_hold` the limit is soft (spec): phase 1 minimizes the total excess over it
-    first, phase 2 holds that excess too, and park decisions count as churn."""
-    t0 = time.perf_counter()
-    time_limit *= state.effort
-    m1 = _Model(batch, state, max_idle_hold, soft=True, grid=grid, window=window)
-    m1.objective("makespan")
-    m1.hint_starts(state.hint)
-    m1.hint_bindings(state.hint_bindings)
-    m1.hint_parks(state.hint_parks)
-    first, sol1 = _solve_plan(m1, time_limit, True, "makespan", t0)
-    if first.status == "no_solution":       # rounded warm start needs repair: one more try
-        first, sol1 = _solve_plan(m1, 4 * time_limit, True, "makespan", t0)
-    if not first.finished:
-        return first
-    m2 = _Model(batch, state, max_idle_hold, soft=True, grid=grid, window=window)
-    m2.churn_objective(state, sol1.values[m1.mk.Index()], reassign_weight,
-                       sum(sol1.values[e.Index()] for e in m1.excess))
-    m2.hint_starts(first.start)
-    m2.hint_bindings(first.bindings)
-    m2.hint_parks(plan_parks(first))
-    second, sol2 = _solve_plan(m2, time_limit, True, "makespan", t0)
-    best = second if second.finished else first
-    best.solver_status = f"{sol1.status}/{sol2.status}"
-    best.solve_seconds = time.perf_counter() - t0
-    return best
-
-
-def _solve_plan(model: _Model, time_limit: float, deterministic: bool, objective: str,
-                t0: float) -> tuple[Plan, "_Solution"]:
-    """Solve `model` and turn the solution into a Plan (see plan_cpsat for the parameters)."""
-    batch = model.batch
     solver = cp_model.CpSolver()
+    solver.parameters.num_workers = 8
     if deterministic:
-        solver.parameters.num_workers = 8
         solver.parameters.interleave_search = True
         solver.parameters.random_seed = 0
         solver.parameters.max_deterministic_time = time_limit
     else:
-        solver.parameters.num_workers = 8
         solver.parameters.max_time_in_seconds = time_limit
     sol = _solve(model.m, solver, isolate=deterministic)
     if sol.status not in _STATUS:
@@ -668,35 +290,15 @@ def _solve_plan(model: _Model, time_limit: float, deterministic: bool, objective
     if status in ("infeasible", "no_solution"):
         return Plan(mode=mode, blocks={}, start={}, bindings={}, status=status,
                     solve_seconds=time.perf_counter() - t0, objective=objective,
-                    solver_status=sol.status), sol
+                    solver_status=sol.status)
     bindings = {wf.id: {} for wf in batch.workflows}
     for (wf, var, cand), lit in model.x.items():
         if sol.values[lit.Index()]:
             bindings[wf][var] = cand
-    blocks = bind_batch(batch, bindings)
-    start = {bid: sol.values[s.Index()] * model.g for bid, s in model.start.items()}
-    if model.state is not None:                 # fixed blocks keep their real starts
-        start.update({bid: s for bid, (s, _) in model.state.fixed.items() if bid in start})
-    for bid, blk in model.over.items():         # given blocks (started parks, rewritten moves)
-        blocks[bid] = blk
-        if bid not in start:
-            start[bid] = model.state.fixed[bid][0]
-    for d, lits in sorted(model.park.items()):
-        spot = next((sp for sp, lit in lits.items() if sol.values[lit.Index()]), None)
-        if spot is not None:
-            park, blocks[d] = park_pair(batch, blocks[d], spot)
-            blocks[park.id] = park
-            start[park.id] = sol.values[model.kstart[d].Index()] * model.g
-    partial = model.partial
-    if model.window:        # blocks past the window's open stays are speculative: plan them later
-        cut = model.open_end * model.g
-        late = {b for b, t in start.items() if t >= cut and b not in (model.state.fixed if model.state else {})}
-        if late:
-            start = {b: t for b, t in start.items() if b not in late}
-            partial = True
-    return Plan(mode=mode, blocks=blocks, start=start, partial=partial,
+    return Plan(mode=mode, blocks=bind_batch(batch, bindings),
+                start={bid: sol.values[s.Index()] for bid, s in model.start.items()},
                 bindings=bindings, status=status, solve_seconds=time.perf_counter() - t0,
-                objective=objective, solver_status=sol.status), sol
+                objective=objective, solver_status=sol.status)
 
 
 @dataclass

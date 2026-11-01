@@ -42,7 +42,7 @@ def run_session(workcell: Workcell, specs, modes: list[str], time_limit: float,
     greedy = [m for m in modes if m.startswith("greedy")]
     if greedy and len(workcell.of_type("arm")) > 1:
         raise CompileError(f"{', '.join(greedy)}: greedy planners support one arm; this workcell "
-                           f"has {len(workcell.of_type('arm'))} (use the cpsat modes)")
+                           f"has {len(workcell.of_type('arm'))} (use jit or the cpsat modes)")
     batch = compile_batch(workcell, specs)
     runs = []
     for mode in modes:

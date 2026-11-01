@@ -105,3 +105,12 @@ def test_libprep_two_arm():
                       load_batch(EX / "libprep_capture.py")[0])
     p = plan_dispatch(b, max_idle_hold=300)
     clean(p, b)
+
+
+def test_workflows_under_way_go_first():
+    """Ten PCRs sharing two primers: starting a new workflow ahead of one under way lets it
+    take the primer the first one's stamper waits for (a long idle hold)."""
+    b = compile_batch(load_workcell(EX / "workcell.yaml"), load_batch(EX / "pcr_live.py")[0])
+    p = plan_dispatch(b, max_idle_hold=300)
+    clean(p, b)
+    assert max((g.length for g in over(p, b, 300)), default=0) < 600

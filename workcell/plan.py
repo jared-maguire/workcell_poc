@@ -31,7 +31,6 @@ class Plan:
     solve_seconds: float = 0.0
     objective: str | None = None
     solver_status: str | None = None     # raw CP-SAT status name (cpsat modes only)
-    partial: bool = False   # schedules only the blocks in a planning window (rolling horizon)
 
     def end(self, block_id: str) -> int:
         return self.start[block_id] + self.blocks[block_id].duration
