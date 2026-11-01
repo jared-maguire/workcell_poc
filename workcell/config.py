@@ -12,7 +12,8 @@ STEP_TYPES = frozenset({"liquid_handler", "heated_shaker", "plate_sealer", "plat
 # Instrument types with two plate positions, `<id>.src` and `<id>.dst`.
 TWO_POSITION_TYPES = frozenset({"head_stamper", "liquid_handler"})
 INSTRUMENT_TYPES = frozenset(
-    {"arm", "storage", "hotel", "barcode_scanner", "head_stamper", "thermocycler"} | STEP_TYPES
+    {"arm", "storage", "hotel", "handoff", "barcode_scanner", "head_stamper", "thermocycler"}
+    | STEP_TYPES
 )
 
 
@@ -30,6 +31,7 @@ class Instrument:
     id: str
     type: str
     slots: int | None = None
+    reach: frozenset[str] | None = None     # arms: instruments it can reach (None = all)
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,8 @@ class Workcell:
     plates: dict[str, Plate]
     durations: dict[str, int] = field(default_factory=lambda: {"default": 1})
     failures: list[FailureSpec] = field(default_factory=list)
+    _groups: dict[str, frozenset[str]] = field(default_factory=dict, init=False, repr=False,
+                                               compare=False)
 
     def nests(self) -> dict[str, Nest]:
         out: dict[str, Nest] = {}
@@ -70,6 +74,8 @@ class Workcell:
                 if slots is None:
                     slots = UNLIMITED_HOTEL_SLOTS if inst.type == "hotel" else 1
                 out[inst.id] = Nest(inst.id, inst.id, slots)
+            elif inst.type == "handoff":
+                out[inst.id] = Nest(inst.id, inst.id, inst.slots or 1)
             elif inst.type in TWO_POSITION_TYPES:
                 for suffix in ("src", "dst"):
                     nid = f"{inst.id}.{suffix}"
@@ -80,6 +86,29 @@ class Workcell:
 
     def nest_owner(self, nest_id: str) -> str:
         return nest_id.split(".", 1)[0]
+
+    def arms_reaching(self, instrument: str) -> list[str]:
+        """Arms that can reach `instrument` (an arm without a reach list reaches everything)."""
+        return sorted(a for a in self.of_type("arm")
+                      if self.instruments[a].reach is None or instrument in self.instruments[a].reach)
+
+    def group(self, instrument: str) -> frozenset[str]:
+        """The instruments connected to `instrument` through arms and handoff spots (all of
+        them when no arm has a reach list). Only handoffs are reached by several arms, so
+        groups meet nowhere else."""
+        if instrument not in self._groups:
+            seen, todo = {instrument}, [instrument]
+            while todo:
+                i = todo.pop()
+                links = (self.instruments[i].reach or self.instruments
+                         if self.instruments[i].type == "arm" else self.arms_reaching(i))
+                for j in links:
+                    if j not in seen:
+                        seen.add(j)
+                        todo.append(j)
+            comp = frozenset(seen)
+            self._groups.update({i: comp for i in comp})
+        return self._groups[instrument]
 
     def of_type(self, t: str) -> list[str]:
         return [i.id for i in self.instruments.values() if i.type == t]
@@ -127,7 +156,9 @@ def parse_workcell(data: dict) -> Workcell:
             raise ConfigError(f"duplicate instrument id {iid!r}")
         if itype == "storage" and raw.get("slots") is None:
             raise ConfigError(f"storage {iid!r} needs 'slots'")
-        instruments[iid] = Instrument(iid, itype, raw.get("slots"))
+        reach = raw.get("reach")
+        instruments[iid] = Instrument(iid, itype, raw.get("slots"),
+                                      frozenset(reach) if reach is not None else None)
 
     plates: dict[str, Plate] = {}
 
@@ -154,7 +185,34 @@ def parse_workcell(data: dict) -> Workcell:
 
     durations = dict(data.get("durations") or {"default": 1})
     failures = [_failure(f, f"failure entry {n}") for n, f in enumerate(data.get("failures") or [])]
-    return Workcell(instruments, plates, durations, failures)
+    wc = Workcell(instruments, plates, durations, failures)
+    _check_reach(wc)
+    return wc
+
+
+def _check_reach(wc: Workcell) -> None:
+    """Arms only overlap at handoff spots: every other instrument is reached by exactly one
+    arm."""
+    arms = wc.of_type("arm")
+    if all(wc.instruments[a].reach is None for a in arms):
+        return
+    for a in arms:
+        for name in sorted(wc.instruments[a].reach or ()):
+            if name not in wc.instruments:
+                raise ConfigError(f"arm {a!r} reach names unknown instrument {name!r}")
+            if wc.instruments[name].type == "arm":
+                raise ConfigError(f"arm {a!r} reach names another arm {name!r}")
+    for iid, inst in wc.instruments.items():
+        if inst.type == "arm":
+            continue
+        reachers = wc.arms_reaching(iid)
+        if not reachers:
+            raise ConfigError(f"instrument {iid!r} is reached by no arm")
+        if len(reachers) > 1 and inst.type != "handoff":
+            raise ConfigError(f"instrument {iid!r} is reached by more than one arm "
+                              f"({', '.join(reachers)}); only handoff spots may be shared")
+    # arms need not all connect: a workcell may hold separate groups (each workflow then
+    # stays in its plates' group; see Workcell.group)
 
 
 def load_workcell(path: str | Path) -> Workcell:

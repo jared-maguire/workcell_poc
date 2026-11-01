@@ -17,7 +17,14 @@ from workcell.report import write_report
 from workcell.run import run_files, run_session
 from workcell.scenarios import scale_specs, scale_workcell_dict
 
-DEFAULT_MODES = ["greedy", "greedy_hotel", "cpsat:makespan", "cpsat:sum_completion"]
+DEFAULT_MODES = ["greedy", "greedy_hotel", "jit", "cpsat:makespan", "cpsat:sum_completion"]
+
+
+def default_modes(workcell) -> list[str]:
+    """The default modes, without greedy/greedy_hotel on a multi-arm workcell (one arm only)."""
+    if len(workcell.of_type("arm")) > 1:
+        return [m for m in DEFAULT_MODES if not m.startswith("greedy")]
+    return list(DEFAULT_MODES)
 HEADERS = ["mode", "status", "makespan", "done", "mean latency", "solve s"]
 
 
@@ -45,22 +52,18 @@ def _parser() -> argparse.ArgumentParser:
     scale.add_argument("--time-limit", type=float, default=60, metavar="S",
                        help="CP-SAT time limit in seconds (default 60)")
     scale.add_argument("--out", default="out/scale.html", help="report path (default out/scale.html)")
-    live = sub.add_parser("live", help="run a batch live: random step times, re-plan on long delays")
+    live = sub.add_parser("live", help="run a batch live: random step times, dispatched just in time")
     live.add_argument("workcell", help="workcell YAML file")
     live.add_argument("batch", help="Python file defining batch() (use @workflow(times=...) for real times)")
     live.add_argument("--seed", type=int, default=0)
-    live.add_argument("--replan-threshold", type=int, default=300, metavar="SECONDS",
-                      help="re-plan when a delay would push a step later by more than this (default 300)")
-    live.add_argument("--replan-time-limit", type=float, default=2, metavar="S",
-                      help="CP-SAT deterministic seconds per re-plan phase (default 2)")
-    live.add_argument("--time-limit", type=float, default=30, metavar="S",
-                      help="CP-SAT deterministic seconds for the initial plan (default 30)")
     live.add_argument("--noise", type=float, default=0.05, help="relative sigma of step times (default 0.05)")
     live.add_argument("--delay-prob", type=float, default=0.02,
                       help="chance a step runs 2-5x long (default 0.02)")
     live.add_argument("--max-idle-hold", type=int, default=300, metavar="SECONDS",
-                      help="longest an instrument may sit idle holding a plate; longer waits park "
-                           "the plate in a hotel or storage (default 300; 0 disables)")
+                      help="longest an instrument may sit idle holding a plate; a plate waiting "
+                           "almost this long goes to a hotel or storage (default 300; 0 disables)")
+    live.add_argument("--release-every", type=int, default=0, metavar="SECONDS",
+                      help="workflow i arrives at i x SECONDS (default 0: all at the start)")
     live.add_argument("--out", default="out/live.html", help="report path (default out/live.html)")
     return p
 
@@ -98,20 +101,20 @@ def _hms(sec: int) -> str:
 def _live(args) -> int:
     specs, source = load_batch(args.batch)
     ls = run_live(load_workcell(args.workcell), specs, seed=args.seed, noise=args.noise,
-                  delay_prob=args.delay_prob, replan_threshold=args.replan_threshold,
-                  replan_time_limit=args.replan_time_limit, time_limit=args.time_limit,
-                  workcell_source=Path(args.workcell).read_text(), batch_source=source,
-                  max_idle_hold=args.max_idle_hold)
+                  delay_prob=args.delay_prob, workcell_source=Path(args.workcell).read_text(),
+                  batch_source=source, max_idle_hold=args.max_idle_hold,
+                  release_every=args.release_every or None)
     L, s = ls.live, ls.session.runs[0].stats
     print(f"seed: {L.seed}")
-    print(f"planned makespan: {_hms(L.planned_makespan)}")
-    print(f"actual makespan:  {_hms(L.actual_makespan)}")
-    print(f"re-plans: {L.replans} ({L.adopted_replans} adopted, {L.not_worth_it} not worth it, "
-          f"{L.failed_replans} failed)")
+    print(f"forecast makespan: {_hms(L.planned_makespan) if L.planned_makespan is not None else '— (deadlock)'}")
+    print(f"actual makespan:   {_hms(L.actual_makespan)}")
     if L.max_idle_hold:
         print(f"idle hold: limit {L.max_idle_hold}s, parks {L.parks}, "
               f"violations {L.idle_violations} (worst {L.worst_idle}s)")
     print(f"completed: {s.completed}/{s.total}")
+    if s.mean_latency is not None:
+        print(f"latency: mean {_hms(round(s.mean_latency))}, max {_hms(s.max_latency)}")
+    print(f"dispatch: {L.dispatch_seconds:.2f} s")
     if ls.errors:
         print(f"as-run validation errors: {len(ls.errors)}", file=sys.stderr)
     print(f"report: {write_report(ls.session, args.out)}")
@@ -126,7 +129,13 @@ def main(argv=None) -> int:
         if args.command == "scale":
             session = _scale_session(args, argv)
         else:
-            session = run_files(args.workcell, args.batch, args.modes or DEFAULT_MODES, args.time_limit)
+            modes = args.modes
+            if not modes:
+                modes = default_modes(load_workcell(args.workcell))
+                if modes != DEFAULT_MODES:
+                    print("note: several arms; skipping greedy and greedy_hotel (one arm only)",
+                          file=sys.stderr)
+            session = run_files(args.workcell, args.batch, modes, args.time_limit)
     except (ConfigError, CompileError, BatchFileError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

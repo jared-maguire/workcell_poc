@@ -1,5 +1,3 @@
-import pytest
-
 from pathlib import Path
 
 from workcell.compiler import compile_batch
@@ -45,11 +43,9 @@ def test_libprep_three_batches_compile():
     assert all(len(c) == 9 for c in codes) and not (codes[0] & codes[1] or codes[1] & codes[2])
 
 
-@pytest.mark.slow
-def test_libprep_one_batch_live():
+def test_libprep_three_batches_live():
     from workcell.live.session import run_live
     ls = run_live(load_workcell(EX / "libprep_workcell.yaml"),
-                  load_batch(EX / "libprep_capture.py")[0][:1], seed=0, time_limit=10,
-                  replan_time_limit=1)
-    assert ls.errors == [] and ls.result.trace.alarm is None
-    assert ls.result.trace.completed >= {blk.id for blk in ls.session.batch.all_blocks()}
+                  load_batch(EX / "libprep_capture.py")[0], seed=0)
+    assert ls.errors == [] and ls.trace.alarm is None
+    assert ls.trace.completed >= {blk.id for blk in ls.session.batch.all_blocks()}

@@ -23,6 +23,7 @@ class World:
         self._dispatch = {
             "storage": self._storage,
             "hotel": self._noop,
+            "handoff": self._noop,
             "arm": self._arm,
             "barcode_scanner": self._scanner,
             "head_stamper": self._stamper,
@@ -96,6 +97,10 @@ class World:
         if instr.op != "move":
             raise self._err(instr, f"unsupported op {instr.op!r}")
         plate, src, dst = (instr.args[k] for k in ("plate", "src", "dst"))
+        reach = self.workcell.instruments[instr.instrument].reach
+        for nest in (src, dst):
+            if reach is not None and self.workcell.nest_owner(nest) not in reach:
+                raise self._err(instr, f"{nest} out of reach of {instr.instrument}")
         if self._loc.get(plate) != src:
             raise self._err(instr, f"plate {plate} not at {src}")
         for nest in (src, dst):

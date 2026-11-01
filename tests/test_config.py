@@ -91,3 +91,30 @@ def test_new_type_nests():
     assert (n["lh1.src"].capacity, n["lh1.dst"].capacity, n["hs1"].capacity) == (1, 1, 1)
     assert all(n[i].capacity == 1 for i in ("seal1", "peel1", "spin1", "read1", "dry1"))
     assert "lh1" not in n
+
+
+def test_two_arm_config(two_arm):
+    assert two_arm.instruments["arm1"].reach >= {"store1", "ho1"}
+    assert two_arm.arms_reaching("ho1") == ["arm1", "arm2"]
+    assert two_arm.arms_reaching("tc2") == ["arm2"]
+    assert two_arm.nests()["ho1"].capacity == 2
+    assert parse_workcell(SMALL).arms_reaching("tc1") == ["arm1"]      # no reach = everything
+
+
+def _with(**changes):
+    from conftest import TWO_ARM
+    cfg = {**TWO_ARM, "instruments": [dict(i) for i in TWO_ARM["instruments"]]}
+    for inst in cfg["instruments"]:
+        if inst["id"] in changes:
+            inst["reach"] = changes[inst["id"]]
+    return cfg
+
+
+@pytest.mark.parametrize("changes, msg", [
+    ({"arm2": ["tc2", "hotel2", "ho1", "tc1"]}, "tc1.*more than one arm"),
+    ({"arm2": ["hotel2", "ho1"]}, "tc2.*no arm"),
+    ({"arm2": ["tc2", "hotel2", "ho1", "nope"]}, "unknown"),
+])
+def test_reach_errors(changes, msg):
+    with pytest.raises(ConfigError, match=msg):
+        parse_workcell(_with(**changes))

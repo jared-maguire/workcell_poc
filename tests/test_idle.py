@@ -1,4 +1,4 @@
-from workcell.idle import hold_chains, idle_gaps, violations
+from workcell.idle import idle_gaps, violations
 from workcell.plan import Plan, bind_batch
 from workcell.planners.cpsat import serial_hint
 from workcell.validate import validate_plan
@@ -13,15 +13,6 @@ def serial_plan(b):
 
 def gaps_of(plan, b):
     return idle_gaps(plan.blocks, plan.start, {k: plan.end(k) for k in plan.start}, b)
-
-
-def test_hold_chains_pcr(timed_batch):
-    chains = {(c.plate, c.nest): c.blocks for c in hold_chains(timed_batch(1))}
-    assert chains[("E0001", "stamp1.dst")] == [P + "05", P + "06", P + "10", P + "11"]
-    assert chains[("E0001", "?tc0")] == [P + "11", P + "12", P + "15"]
-    assert chains[("S0001", "scan1")] == [P + "00", P + "01", P + "02"]
-    assert chains[("S0001", "stamp1.src")] == [P + "02", P + "06", P + "13"]
-    assert not any(n in ("store1", "hotel1") for _, n in chains)
 
 
 def test_serial_plan_has_no_violations(timed_batch):

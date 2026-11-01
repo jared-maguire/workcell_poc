@@ -1,39 +1,60 @@
 # Workcell scheduler playground
 
-A simulation playground for scheduling plate-handling workflows (such as PCR) on a lab workcell with one robot arm, storage, a hotel, a scanner, a head stamper and thermocyclers. It compiles a batch of workflows, plans them with several strategies, simulates each plan, and writes a single self-contained HTML report comparing the results.
+A simulation playground for scheduling plate-handling workflows (such as PCR) on a lab workcell with one robot arm, storage, a hotel, a scanner, a head stamper and thermocyclers. It compiles a batch of workflows, plans them with several strategies (including the just-in-time dispatcher that runs live mode), simulates each plan, and writes a single self-contained HTML report comparing the results.
 
 ## Example report
 
-[`docs/reports/pcr10.html`](docs/reports/pcr10.html) is a pre-generated report for 10 parallel PCR workflows on the example workcell, comparing all four default modes. Download it and open it in a browser (it is fully self-contained and works offline). In brief:
+[`docs/reports/pcr10.html`](docs/reports/pcr10.html) is a pre-generated report for 10 parallel PCR workflows on the example workcell, comparing the default modes. Download it and open it in a browser (it is fully self-contained and works offline). In brief:
 
 | mode | result | makespan |
 |---|---|---|
 | greedy | deadlock at t=7, 0/10 done | – |
 | greedy_hotel | done | 257 min |
+| jit | done (0.1 s) | 236 min |
 | cpsat:makespan | done (not proven best within the 30 s limit) | 204 min |
 | cpsat:sum_completion | done (not proven best within the 30 s limit) | 209 min |
 
+With these unit step times the arm is the bottleneck and CP-SAT's lookahead pays off; with realistic times (live mode below) the dispatcher matches or beats it.
+
 The report opens on the best run (shortest makespan among runs where every workflow finished).
 
-## v2: live re-planning
+## Live mode: just-in-time dispatch
 
-`live` runs a batch the way a lab would: each step has a realistic time in seconds (set in the workflow with `@workflow(times=...)` and `seconds=`), actual times vary randomly (seeded), and the system re-plans with CP-SAT when a delay would push a later step back by more than the threshold (5 min). A re-plan keeps churn low: it holds the best finish time it can find while changing as little as possible, and it is adopted only if it finishes at least the threshold sooner than just letting everything slide. Same seed, same run.
+`live` runs a batch the way a lab would. Each step has a realistic time in seconds (set in the workflow with `@workflow(times=...)` and `seconds=`), and actual times vary randomly (seeded; same seed, same run).
+
+A just-in-time dispatcher reacts to steps actually finishing:
+- It starts whatever can start: workflows already under way first, then the one with the most work left.
+- It sends a plate to the nearest parking spot when its next stop is full.
+- It never looks at how long a running step will really take.
+
+The forecast is the same dispatcher run on the planned times. Dispatching a whole run takes well under a second.
 
 ```
 .venv/bin/python -m workcell live examples/workcell.yaml examples/pcr_live.py --seed 0 --out out/live.html
 ```
 ```
 seed: 0
-planned makespan: 5:56:22
-actual makespan:  7:50:30
-re-plans: 11 (5 adopted, 6 not worth it, 0 failed)
-idle hold: limit 300s, parks 18, violations 6 (worst 399s)
+forecast makespan: 6:02:24
+actual makespan:   7:09:05
+idle hold: limit 300s, parks 27, violations 2 (worst 465s)
 completed: 10/10
+dispatch: 0.30 s
 ```
 
-**Idle hold.** No instrument may sit idle holding a plate for more than 5 minutes (`--max-idle-hold SECONDS`, `0` disables). The planner sees long waits coming and parks the plate right away in the hotel (deck positions: only the arm move) or storage (a machine: 60 s to store or retrieve), then brings it back when its next stop is free; short waits stay put. During the run, like a lab tech, the executor moves a plate to the hotel when it has waited almost the limit and its next move still hasn't started (e.g. behind a thermocycler running long). Waits that still go over (mostly by seconds, from step-time noise) are counted in the report.
+**Idle hold.** No instrument may sit idle holding a plate for more than 5 minutes (`--max-idle-hold SECONDS`, `0` disables). The dispatcher does what a lab tech would: when a plate has waited 4 minutes on an instrument and its next move hasn't started, it goes to the nearest hotel (deck positions: only the arm move) or, if the hotels are full, to storage (a machine: 60 s to store or retrieve). Waits that still go over are counted in the report. The rule doesn't cover a plate waiting between two uses of the same instrument.
 
-Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Re-plan markers on the timeline: solid = adopted, dashed = not worth it, dotted = failed. Options: `--seed`, `--max-idle-hold SECONDS`, `--replan-threshold SECONDS`, `--time-limit` (initial plan, default 30), `--replan-time-limit` (per re-plan phase, default 2), `--noise`, `--delay-prob`.
+Example report (opens in the browser): https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10_live.html. Options: `--seed`, `--max-idle-hold SECONDS`, `--noise`, `--delay-prob`.
+
+**Why not CP-SAT?** Until 2026-10-31 live mode planned with CP-SAT and re-planned on delays. That needed a 10 s grid, a 4 h rolling window and a persistent solver process to run in about a minute. On the same seeds the dispatcher did as well or better:
+
+| | seed 0 | seed 1 | seed 2 | per run |
+|---|---|---|---|---|
+| 10 PCRs, CP-SAT re-planning | 7:57:50 | 7:18:50 | 7:21:24 | 32–54 s |
+| 10 PCRs, dispatch | 7:09:05 | 6:04:40 | 5:53:18 | 0.3 s |
+| 3 library preps, CP-SAT re-planning | 11:55:18 | 12:01:20 | 12:03:40 | 82–144 s |
+| 3 library preps, dispatch | 12:08:58 | 11:15:07 | 11:21:10 | 0.2 s |
+
+Without noise, dispatch is within 1.4% of CP-SAT's proven optimum on the library prep batch (40,418 s). Design: `docs/superpowers/specs/2026-10-31-jit-dispatch-design.md`.
 
 
 ## Demo: library prep + hybrid capture, three batches
@@ -41,17 +62,78 @@ Example report (opens in the browser): https://jared-maguire.github.io/workcell_
 `examples/libprep_capture.py` takes a 96-sample gDNA plate through Illumina DNA Prep library prep, IDT xGen hybridization capture, and consolidation into a single well for the sequencer: 30 steps with real durations (tagmentation, bead cleanups, indexing PCR, pooling 8 libraries per capture, dry-down, 4 h hybridization, streptavidin capture, washes, post-capture PCR, QC reads, consolidation). `examples/libprep_workcell.yaml` adds a liquid handler with on-deck magnet (×2), heated shakers (×2), sealer, peeler, centrifuge, plate reader and vacuum concentrator to the arm, storage, hotel, scanner, stamper and three thermocyclers. Workflows use `w.step(instrument_type, op, plate[, dst], seconds=...)` for these instruments. Design: `docs/superpowers/specs/2026-10-31-libprep-capture-design.md`.
 
 ```
-.venv/bin/python -m workcell live examples/libprep_workcell.yaml examples/libprep_capture.py --seed 0 --time-limit 60
+.venv/bin/python -m workcell live examples/libprep_workcell.yaml examples/libprep_capture.py --seed 0
 ```
 ```
-planned makespan: 11:19:41
-actual makespan:  12:10:24
-re-plans: 15 (11 adopted, 4 not worth it, 0 failed)
-idle hold: limit 300s, parks 17, violations 3 (worst 714s)
+forecast makespan: 11:22:56
+actual makespan:   12:08:58
+idle hold: limit 300s, parks 11, violations 0 (worst 0s)
 completed: 3/3
+dispatch: 0.16 s
 ```
 
-One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html (once merged to master).
+One batch needs about 10.5 h of instrument time; three in parallel finish in about 12 h. Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep3_live.html.
+
+### Two arms
+
+Arms can each reach their own instruments and pass plates through handoff spots (`reach:` lists and `type: handoff` in the workcell file; only handoffs may be shared). A move between zones is relayed through a handoff in one step. The dispatcher may use any instrument and, given a choice, takes the free one with the shortest route; parked plates go to their own zone's hotel. greedy and greedy_hotel support one arm only. `examples/libprep_2arm.yaml` splits the demo into a library-prep zone (arm1) and a capture zone (arm2) with one handoff spot; sealer, peeler and centrifuge exist once (plates cross over), plate readers once per zone. Design: `docs/superpowers/specs/2026-10-31-multi-arm-design.md`.
+
+```
+.venv/bin/python -m workcell live examples/libprep_2arm.yaml examples/libprep_capture.py --seed 0
+```
+```
+forecast makespan: 11:25:01
+actual makespan:   12:12:01
+idle hold: limit 300s, parks 12, violations 0 (worst 0s)
+completed: 3/3
+dispatch: 0.17 s
+```
+
+At three batches the thermocyclers (4 h hybridization) set the pace, so two arms finish about as fast as one; the second arm is for higher volume. Each demo run takes about 2 seconds. Report: `docs/reports/libprep3_2arm_live.html`.
+
+## Scale: 10,000 samples a day
+
+The library prep demo at production volume: 105 batches of 96 samples (10,080 samples), arriving one every 13.7 min (24 h / 105).
+
+`examples/make_libprep_lines.py` generates `examples/libprep_10k.yaml`, a workcell of 4 separate lines.
+- **Each line** is the two-arm design: a prep arm and a capture arm, joined by a handoff spot.
+  - **Prep zone:** storage, a hotel, a scanner, a stamper, a sealer, a peeler, a reader, 2 thermocyclers, 2 liquid handlers and a shaker.
+  - **Capture zone:** a hotel, a centrifuge, a reader, 7 thermocyclers, 2 liquid handlers, 2 shakers and 2 concentrators.
+- **In total:** 8 arms, 36 thermocyclers, 16 liquid handlers, 12 shakers and 8 concentrators.
+- **Batch assignment:** each batch's plates start in one line's storage, round robin, and the batch stays on that line.
+
+```
+.venv/bin/python -m workcell live examples/libprep_10k.yaml examples/libprep_10k.py --release-every 823 --seed 0
+```
+```
+seed: 0
+forecast makespan: 33:39:51
+actual makespan:   35:58:13
+idle hold: limit 300s, parks 296, violations 50 (worst 555s)
+completed: 105/105
+latency: mean 10:57:57, max 23:59:01
+dispatch: 7.25 s
+```
+
+The run takes about 45 s in all. Report (13 MB, takes a few seconds to load): https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_10k_live.html.
+
+**What it took to get there** (measured 2026-10-31):
+- **Release through the day.** With all 105 batches released at once, the dispatcher started them all within 8 h. Every batch then took 28–39 h instead of 10 h. Spread over the day, a batch takes the same ~10 h as on an empty cell.
+- **Keep lines separate.** At first, neighbouring lines shared a handoff spot so they could borrow each other's free instruments. Plates drifted across lines and needed relays through up to four arms at once, which hold all of them. Plates then waited on instruments for hours (385 idle-limit violations, worst 2.8 h). With separate lines there were 4 violations, worst 340 s. Workcells may now consist of separate groups of arms; a workflow uses only the instruments in its plates' group.
+- **Speed.** Dispatching the day went from 143 s to 4–7 s, by keeping the ready set, nest occupancy and locks up to date incrementally.
+
+**How much hardware?** Latency is measured from arrival:
+- "no noise" means planned step times.
+- seeds 0–2 use the default noise: 5% spread, and 2% of steps run 2–5× long.
+
+| configuration (4 lines) | thermocyclers | no noise: median / max | with noise: median | with noise: 90th percentile |
+|---|---|---|---|---|
+| A: as generated | 36 | 9.9 / 10.2 h | 10.2–10.3 h | 10.8–11.9 h |
+| B: 6 capture thermocyclers, 1 concentrator and 1 capture shaker per line | 32 | 10.0 / 10.2 h | 10.5–10.8 h | 11.8–13.1 h |
+| C: as B, 5 capture thermocyclers | 28 | 10.0 / 10.2 h | 10.5–11.0 h | 11.9–13.0 h |
+| D: as C, plus 1 prep thermocycler and 1 prep liquid handler per line (12 liquid handlers) | 24 | 10.3 / 11.3 h | 11.5–12.6 h | 14.6–19.2 h |
+
+A–C keep up with 105 batches a day, and latency doesn't grow through the day. D is past the edge: it still finishes, but queues build up under noise. B is the lean choice with headroom. Leaner cells recover more slowly from overruns. With noise, the slowest batch takes 13–25 h. That is the noise model, not the scheduler: a 4 h hybridization drawn 2–5× long.
 
 ## Quickstart
 
@@ -67,6 +149,7 @@ Then open `out/report.html` in a browser. Options: `--mode M` (repeatable), `--t
 
 - `greedy` (`greedy:round_robin`, `greedy:fifo`): dispatches blocks as resources free up, with no parking. It is expected to deadlock on the PCR batch; that demonstrates why planning matters.
 - `greedy_hotel` (`greedy_hotel:round_robin`, `greedy_hotel:fifo`): greedy that can park plates in the hotel to avoid deadlock. It can still deadlock if hotel capacity is exhausted (the deadlock waits then say "hotel full").
+- `jit`: the just-in-time dispatcher live mode uses (planned times, no idle limit). Workflows under way first, then most remaining work; parks a plate when its next stop is full. Any number of arms.
 - `cpsat` / `cpsat:makespan`: CP-SAT plan minimizing total makespan.
 - `cpsat:sum_completion`: CP-SAT plan minimizing the sum of workflow completion times.
 
@@ -75,7 +158,8 @@ Then open `out/report.html` in a browser. Options: `--mode M` (repeatable), `--t
 - `workcell/config.py`: workcell YAML loading
 - `workcell/dsl.py`, `workcell/library.py`: workflow DSL and PCR library
 - `workcell/compiler.py`, `workcell/ir.py`: batch compilation to blocks
-- `workcell/planners/`: greedy and CP-SAT planners
+- `workcell/planners/`: greedy, just-in-time dispatch and CP-SAT planners
+- `workcell/live/`: live mode (noisy step times, forecast, as-run validation)
 - `workcell/sim/`: executor and world model
 - `workcell/validate.py`, `workcell/stats.py`: plan validation and statistics
 - `workcell/report/`: HTML report
@@ -93,7 +177,8 @@ Workcell: 1 arm, 1 storage (208 slots), 1 hotel (500 slots), 4 head stampers, 16
 |---|---|---|---|---|
 | greedy:round_robin | deadlock | 17 | 0/100 | 0.00 |
 | greedy_hotel:round_robin | complete | 2288 | 100/100 | 0.00 |
+| jit | complete | 2100 | 100/100 | 6.43 |
 | cpsat:makespan | feasible | 2002 | 100/100 | 65.91 |
 | cpsat:sum_completion | feasible | 2003 | 100/100 | 66.13 |
 
-Pure greedy deadlocked almost immediately (t=17, nothing finished). greedy_hotel completed all 100 workflows but its makespan (2288) is about 14% worse than CP-SAT's. CP-SAT found only feasible (not proven optimal) plans within the 60 s limit, with makespan 2002 and 2003; the two objectives ended up nearly identical, and each solve ran about 6 s past the limit.
+Pure greedy deadlocked almost immediately (t=17, nothing finished). greedy_hotel completed all 100 workflows but its makespan (2288) is about 14% worse than CP-SAT's; most of that is round-robin order (greedy_hotel:fifo gets 2003). jit gets 2100, 5% worse than CP-SAT, in 6 s (measured 2026-10-31). CP-SAT found only feasible (not proven optimal) plans within the 60 s limit, with makespan 2002 and 2003; the two objectives ended up nearly identical, and each solve ran about 6 s past the limit.

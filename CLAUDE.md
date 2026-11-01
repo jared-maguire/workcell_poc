@@ -7,14 +7,14 @@ Simulation playground for lab workcell control software: a workflow DSL is compi
 ```
 python -m venv .venv && .venv/bin/pip install -e .     # Python 3.12+; ortools, pyyaml, pygments, pytest
 .venv/bin/pip install -e '.[dev]'                       # adds pytest, pytest-xdist
-.venv/bin/pytest -q                                     # fast suite, parallel, ~1 min (skips slow)
-.venv/bin/pytest -q -m slow                             # CP-SAT-heavy tests, ~1–2 min
+.venv/bin/pytest -q                                     # fast suite, parallel, ~20 s (skips slow)
+.venv/bin/pytest -q -m slow                             # CP-SAT-heavy tests, ~30 s
 .venv/bin/python -m workcell run examples/workcell.yaml examples/pcr_batch.py --out out/report.html
 .venv/bin/python -m workcell scale --workflows 100 --time-limit 60 --out out/scale100.html   # ~4 min
-.venv/bin/python -m workcell live examples/workcell.yaml examples/pcr_live.py --seed 0     # v2, ~1 min
+.venv/bin/python -m workcell live examples/workcell.yaml examples/pcr_live.py --seed 0     # live, ~2 s
 ```
 
-`--mode` is repeatable: `greedy[:round_robin|:fifo]`, `greedy_hotel[:round_robin|:fifo]`, `cpsat[:makespan|:sum_completion]`. Exit code 2 = config/compile/input error; deadlocks and alarms are results (exit 0).
+`--mode` is repeatable: `jit`, `greedy[:round_robin|:fifo]`, `greedy_hotel[:round_robin|:fifo]`, `cpsat[:makespan|:sum_completion]`. Exit code 2 = config/compile/input error; deadlocks and alarms are results (exit 0).
 
 ## Pipeline (one module per stage, pure data between stages)
 
@@ -22,14 +22,42 @@ python -m venv .venv && .venv/bin/pip install -e .     # Python 3.12+; ortools, 
 
 Planners never touch the simulator or report; a `Plan` (bound blocks + start times + bindings + status) is all downstream code sees.
 
-## v2 live mode (`workcell/live/`, branch v2)
+## Live mode (`workcell/live/`) and the just-in-time dispatcher
 
-- `noise.py` seeded actual durations (draw depends only on seed, block id, instruction index) · `order.py` plan-order graph (`plan_preds`: deps, per-instrument/plate order, nest handoffs) + `project`/`max_push` · `executor.py` event loop (jumps between events; follows the plan as an order; checks for long delays whenever any block finishes — a still-running overrun counts, estimated as ending now — and blames the most-overrun block; adopts a re-plan only if it beats sliding by ≥ threshold, else the projection becomes the new baseline) · `session.py` `run_live`, as-run plan, `LiveStats`.
+- **Dispatcher** (`planners/dispatch.py`, `plan_dispatch`; spec `docs/superpowers/specs/2026-10-31-jit-dispatch-design.md`). It subclasses the greedy planner and reuses its locks, nests and borrows, and its one-workflow-per-stamper rule.
+  - **Priority:** workflows under way first, then the most remaining work (`remaining_work`), then batch order.
+  - **Bindings:** tried shortest route first.
+  - **Parking:** a plate goes to the nearest parking spot with room (`parking_spots(near=...)`), both when its destination is full and under the idle rule. The idle rule fires at `max_idle_hold - 60` s idle, when the plate's next block is a single move out.
+  - **Parked moves:** a parked plate's removal is rewritten (`park_pair`) only after binding, so two-arm routes are concrete.
+  - **Actual times:** with `actual`, blocks run with actual durations. Decisions only read finished blocks' end times, so a dispatch with noisy times *is* a live run.
+  - **v1:** mode `jit` (in the defaults, multi-arm ok).
+- **`session.py` `run_live`:**
+  1. Forecast: dispatch with planned times.
+  2. As-run: dispatch with `noise.actual_block` times.
+  3. Replay the as-run plan in `sim/executor.execute`.
+  4. Validate it, and report `LiveStats`.
+
+  No re-planning. `noise.py` draws depend only on seed, block id and instruction index.
+- **Removed 2026-10-31:**
+  - live CP-SAT re-planning (executor, plan-order graph, `ReplanState`)
+  - grid and window
+  - the CP-SAT idle-hold model
+
+  Reason: a dispatcher matched or beat it in about 0.1 s. Plain CP-SAT stays for `run` (`deterministic=True` solves go to one persistent crash-isolated solver process, `_Worker`).
 - **Times:** integer seconds. Only `@workflow(times=...)` workflows use rules 1–2 (op `seconds=`/thermocycle program sum, then the workflow table); everything else falls back to workcell `durations`, exactly as v1.
-- **CP-SAT in live mode:** `plan_cpsat(..., deterministic=True)` = 8 interleaved workers, seed 0, deterministic-time limit, solved in a child process with retry (OR-Tools 9.15 on Python 3.14 sometimes aborts with heap corruption). Same inputs → same plan, across processes. Initial plan is warm-started with `hint="serial"` (v2 never uses greedy). Re-plans: `replan_cpsat` (phase 1 makespan, phase 2 churn with makespan held).
-- **Idle hold** (`max_idle_hold`, live default 300 s; spec `docs/superpowers/specs/2026-10-31-max-idle-hold-design.md`): `idle.py` defines gaps (a plate in an instrument nest between two of its own blocks) and compile-level `hold_chains`; `parking.py` builds park blocks (greedy_hotel shape: `<removal>.park`, removal rewritten to start from the spot). CP-SAT models each chain's removal as direct or parked at any hotel/storage nest; initial plans enforce the limit hard via `plan_idle_hold` (half budget without the limit, half with it warm-started — a cold limited solve barely beats the serial plan), re-plans soft. Objective adds park delay + `PARK_COST` per park (a total-idle-time term cost ~3 h of plan quality). The executor also re-plans on new projected idle violations and does "lab-tech parks": a waiting plate whose removal hasn't started by its deadline goes to the hotel at once (order graph edited in place — re-sorting from shifted starts mis-pairs nest handoffs). Storage ops are 60 s in `pcr_live.py`; hotels have none.
-- **Lab steps** (`w.step(itype, op, plate[, dst], seconds=)`): generic timed steps on `STEP_TYPES` (config.py: liquid_handler, heated_shaker, plate_sealer, plate_peeler, centrifuge, plate_reader, vacuum_concentrator). Two plates only on `TWO_POSITION_TYPES` (head_stamper, liquid_handler: `.src`/`.dst`; one plate → `.dst`); a workflow keeps one variable per two-position type (`?lh`), numbered ones otherwise (`?hs0`…), and consecutive steps on the instrument type a plate already sits on stay there. The world only checks the plates are in the instrument. Demo: `examples/libprep_capture.py` + `libprep_workcell.yaml` (3 batches, `--time-limit 60`, ~5 min).
-- **Validation:** the as-run schedule (actual starts/durations) must pass `validate_plan(asrun, batch, check_durations=False)`. In live mode lock waits are normal (not a bug signal). `Plan.end()` uses planned durations — use actual ends for started blocks.
+- **Idle hold** (`max_idle_hold`, live default 300 s):
+  - `idle.py` defines gaps: a plate in an instrument nest between two of its own blocks.
+  - `parking.py` builds park blocks in the greedy_hotel shape: `<removal>.park`, with the removal rewritten to start from the spot.
+  - Storage ops are 60 s in `pcr_live.py`; hotels have none.
+- **Lab steps** (`w.step(itype, op, plate[, dst], seconds=)`): generic timed steps on `STEP_TYPES` (config.py: liquid_handler, heated_shaker, plate_sealer, plate_peeler, centrifuge, plate_reader, vacuum_concentrator). Two plates only on `TWO_POSITION_TYPES` (head_stamper, liquid_handler: `.src`/`.dst`; one plate → `.dst`); a workflow keeps one variable per two-position type (`?lh`), numbered ones otherwise (`?hs0`…), and consecutive steps on the instrument type a plate already sits on stay there. The world only checks the plates are in the instrument. Demo: `examples/libprep_capture.py` + `libprep_workcell.yaml` (3 batches, `live`, ~2 s).
+- **Multiple arms** (spec `docs/superpowers/specs/2026-10-31-multi-arm-design.md`): arms take `reach:` lists; only `handoff` instruments may be reached by several arms (config validates). `compiler.route` finds the arm chain; a cross-zone move is one relay block (all arms/handoffs on the route locked). When a move's route depends on a binding (`AmbiguousRoute`), the block carries `variants` (one concrete instruction list per binding; `Block.bind` picks; unbound `instructions` = first-candidates variant). CP-SAT sizes/locks variants per binding; its multi-arm serial warm start binds nearest candidates. greedy/greedy_hotel stay single-arm; the dispatcher handles any number.
+- **Separate groups:** arms need not all connect. `Workcell.group(instrument)` is the set connected through arms and handoffs. A workflow's variable candidates and its parking spots are limited to its plates' group; plates starting in two groups is a `CompileError`.
+  - Example: `examples/make_libprep_lines.py` generates `libprep_10k.yaml` (4 separate lines) for `libprep_10k.py` (105 batches).
+  - Run it with `live --release-every 823`.
+  - Linking lines through handoffs hurt: plates drifted across lines and needed multi-arm relays.
+- **Release times:** `plan_dispatch(release={wf: t})`, or `run_live(release_every=)`. Releasing a whole day at once makes the dispatcher start everything and thrash.
+- **Dispatcher speed:** it keeps the ready set, nest occupancy and busy/locked sets up to date incrementally; don't reintroduce whole-batch scans (`_Greedy._ready`/`_occupants`) on hot paths.
+- **Validation:** the as-run schedule (actual starts/durations) must pass `validate_plan(asrun, batch, check_durations=False)` and replay with no alarm and no lock waits.
 
 ## Invariants (break these and the planners, validator, and executor disagree)
 

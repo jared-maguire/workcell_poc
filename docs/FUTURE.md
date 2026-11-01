@@ -11,27 +11,17 @@ Ideas deliberately left out of the current version. Newest at the top of each se
   - New workflow-language needs: many-to-one pooling, reagent plates consumed across steps, steps with time windows (e.g. bead incubations that must not run long).
 - **Timing mode (calibration).** Run a workflow with rough time estimates, benchmark the observed step times, and write the observed times back into the workflow definition. *(Jared, 2026-10-30)*
 
-## Live re-planning (from v2 observations)
+## Just-in-time dispatch (from the switch away from live CP-SAT)
 
-- **Better overrun detection and estimates.** v2 checks for delays whenever any block finishes; a still-running overrun is noticed then, but only as "ends now" (optimistic), and not at all if nothing else finishes meanwhile. A timed "overdue" check at planned end + threshold, plus a pessimistic remaining-time estimate, would let re-plans move queued plates to idle instruments while the overrun is still happening.
-
-- **Smarter overrun estimates for parking.** Lab-tech parks act only when a waiting plate hits its deadline; a remaining-time estimate for overdue steps (or asking the instrument, as a real thermocycler reports time left) would let re-plans park earlier and reshuffle other work. A "late by X, assume X more" estimate was tried and caused a re-plan storm.
-- **Re-plan after a lab-tech park.** A lab-tech park frees the instrument, but the plan order still queues the instrument's next user behind the parked plate's unpark, so nobody else uses the freed instrument until then. A re-plan right after the park would let other work move in.
-- **Mid-use idle waits.** The idle-hold rule bounds waits between a workflow's own steps on an instrument (e.g. a sample on the stamper while its partner plate is fetched) but never parks for them; step-time noise can push those a few seconds over the limit.
-
-## Scheduling performance (from v2 observations)
-
-With realistic times (4 s scans next to 4020 s thermocycles; horizon ~44,000 s), CP-SAT cannot find a first feasible plan for 10 PCR workflows unaided; with a serial warm start it reaches 21,413 s against a ~20,100 s thermocycler lower bound.
-
-- **Plan on a coarser time grid.** Plan in e.g. 10 s units (round durations up), execute in seconds. Roughly 10× smaller domains, small loss in plan quality.
-- **Give CP-SAT the thermocycler lower bound.** Add redundant constraints (makespan ≥ total thermocycle time ÷ number of thermocyclers, plus unavoidable lead-in/lead-out) so it can prove near-optimality and stop early instead of spending its whole budget.
-- **Two-level planning.** First decide which thermocycler each plate uses and in what order (the real bottleneck), then schedule the arm moves around that fixed assignment.
+- **Steps with time limits between them** (e.g. seal within N minutes of dispensing, beads must not sit). The dispatcher has no lookahead, so it can start step A and find step B's instrument busy. This is where lookahead or a planner earns its keep; add such steps to a workflow first and see where dispatch breaks.
+- **Mid-use idle waits.** The idle rule parks only a plate whose next block is a move out. A plate waiting between two uses of the same instrument (e.g. a destination plate on the stamper while its primer is fetched) is never parked.
+- **Forecast during the run.** Today the forecast is made once, with planned times. Re-running the dispatcher from the current state on every event (milliseconds) would give a live ETA per workflow.
+- **CP-SAT as an advisor.** On unit-time PCR (arm-bound, no long steps), CP-SAT still beats dispatch (204 vs 236 on 10 PCRs). It could suggest priorities or bindings to the dispatcher offline. `run`'s CP-SAT now warm-starts from the dispatcher's plan (it lands next to it on the two-arm library prep: 41,188 vs 41,111 s at 20 s). An earlier try that kept the park options in the model found nothing.
+- **Smarter priorities.** Workflows under way, then most remaining work, was the best of four simple rules tried. The mixed batch (3 library preps plus 4 PCRs) still varies about 50 min across seeds.
 
 ## Carried over from v1
 
 - **Waiting stat can go negative.** "Waiting" = latency − Σ block durations, but a workflow's blocks can overlap; use latency − union of its block spans.
 - **CP-SAT proves optimality more often.** Add redundant constraints (e.g., arm-load lower bound on makespan, per-workflow minimum duration).
 - **Hotel handoffs** between workflows sharing a plate (skip store + retrieve).
-- **Instruments keep running while re-planning** (solve time consumes wall-clock / sim time instead of pausing the clock).
-- **Multiple arms / arm reach zones.**
 - **Minimal deadlock cycle** (current cycle is a union over possible bindings, not guaranteed minimal).

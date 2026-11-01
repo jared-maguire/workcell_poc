@@ -43,6 +43,10 @@ class Block:
     plates: set[str]
     deps: list[str]
     inserted: bool = False
+    # route variants: when the route (arms, handoffs) depends on how instrument variables
+    # are bound, one concrete instruction list per binding, keyed by sorted ((var, cand), ...);
+    # `instructions` is the all-first-candidates variant
+    variants: dict[tuple, list[Instruction]] | None = None
 
     @property
     def duration(self) -> int:
@@ -56,13 +60,17 @@ class Block:
         def arg(v):
             return resolve(v, bindings) if isinstance(v, str) else v
 
+        if self.variants:
+            key = tuple((var, bindings[var]) for var, _ in next(iter(self.variants)))
+            instructions = list(self.variants[key])
+        else:
+            instructions = [Instruction(resolve(i.instrument, bindings), i.op,
+                                        {k: arg(v) for k, v in i.args.items()}, i.duration)
+                            for i in self.instructions]
         return replace(
             self,
-            instructions=[
-                Instruction(resolve(i.instrument, bindings), i.op,
-                            {k: arg(v) for k, v in i.args.items()}, i.duration)
-                for i in self.instructions
-            ],
+            instructions=instructions,
+            variants=None,
             moves=[PlateMove(m.plate, resolve(m.src, bindings), resolve(m.dst, bindings))
                    for m in self.moves],
             plates=set(self.plates),
