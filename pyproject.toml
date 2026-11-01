@@ -15,7 +15,7 @@ build-backend = "setuptools.build_meta"
 include = ["workcell*"]
 
 [tool.setuptools.package-data]
-"workcell.report" = ["*.js", "*.css", "*.html"]
+"workcell.report" = ["*.js", "*.css", "*.html", "vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -48,7 +48,7 @@
   const FINISHED = new Set(["complete", "optimal", "feasible"]);
   // Live (v2) reports: times are seconds, shown as h:mm:ss; v1 reports keep "min".
   const LIVE = D.live;
-  const SPEEDS = LIVE ? [10, 30, 60, 120, 300, 600] : [0.5, 1, 2, 5, 10, 20, 50, 100, 200];
+  const SPEEDS = LIVE ? [1, 2, 5, 10, 30, 60, 120, 300, 600] : [0.5, 1, 2, 5, 10, 20, 50, 100, 200];
   const hms = v => {
     const x = Math.max(0, Math.round(v)), h = Math.floor(x / 3600), m = Math.floor(x % 3600 / 60);
     return `${h}:${String(m).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
@@ -524,6 +524,7 @@
     scrub.setAttribute("aria-valuenow", Math.floor(S.t));
     $("#tnow").textContent = LIVE ? `t = ${hms(S.t)} / ${hms(T)}` : `t = ${Math.floor(S.t)} / ${T} min`;
     updateFloor(S.t, animate);
+    lab3dDo(v => v.update(S.t, S.speed));
     if (S.playing && S.zoom > 1) follow();
   }
   function follow() {
@@ -728,7 +729,37 @@
     markCompiledForRun();
     autoSpeed();
     for (const p in chips) delete chips[p].dataset.loc;
+    lab3dDo(v => v.setRun(run));
     setTime(Math.min(S.t, P().T));
+  }
+
+  // ---------------------------------------------------------------- Lab 3D (lab3d.js), built on first sight
+  let lab3d = null;
+  // a 3D error drops the card and never stops playback or the other views
+  function lab3dDo(f) {
+    if (!lab3d) return;
+    try { f(lab3d); } catch (err) { lab3d = null; $("#card-lab3d").hidden = true; console.error(err); }
+  }
+  function watchLab3d() {
+    const card = $("#card-lab3d");
+    if (!window.Lab3D || !window.THREE || !window.IntersectionObserver) { card.hidden = true; return; }
+    const io = new IntersectionObserver(es => {
+      if (!es.some(e => e.isIntersecting) || lab3d) return;
+      io.disconnect();
+      try {
+        lab3d = Lab3D.create($("#lab3d"), {
+          instruments: D.instruments,
+          typeColor: type => TYPE_COLOR[type] || "#888888",
+          // wfColor with commas: three r128 parses only the comma form of hsl()
+          plateColor: p => (plateOwner[p] === undefined ? null : `hsl(${hue(plateOwner[p]).toFixed(1)}, 62%, 52%)`),
+        });
+      } catch (err) {                   // no WebGL: drop the card, keep the report
+        card.hidden = true;
+        return;
+      }
+      lab3dDo(v => { v.setRun(R()); v.update(S.t, S.speed); });
+    });
+    io.observe(card);
   }
 
   // ---------------------------------------------------------------- init
@@ -748,4 +779,5 @@
     return best;
   }
   setRun(bestRun());
+  watchLab3d();
 })();
