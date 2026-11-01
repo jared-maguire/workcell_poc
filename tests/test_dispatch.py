@@ -114,3 +114,14 @@ def test_workflows_under_way_go_first():
     p = plan_dispatch(b, max_idle_hold=300)
     clean(p, b)
     assert max((g.length for g in over(p, b, 300)), default=0) < 600
+
+
+def test_release_times(timed_batch):
+    """A workflow starts nothing before its release time; the run waits for releases."""
+    b = timed_batch(3)
+    release = {"pcr_live-1": 5000, "pcr_live-2": 20000}
+    p = plan_dispatch(b, max_idle_hold=300, release=release)
+    clean(p, b)
+    for wf in b.workflows:
+        assert min(p.start[x.id] for x in wf.blocks) >= release.get(wf.id, 0)
+    assert min(p.start[x.id] for x in b.workflows[2].blocks) == 20000

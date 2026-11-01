@@ -33,8 +33,10 @@ def remaining_work(batch: CompiledBatch) -> dict[str, int]:
 
 class _Dispatch(_Greedy):
     def __init__(self, batch: CompiledBatch, max_idle_hold: int | None,
-                 actual: Callable[[Block], list[int]] | None):
+                 actual: Callable[[Block], list[int]] | None, release: dict[str, int]):
         super().__init__(batch, "fifo", park=True)
+        self.release = release
+        self.now = 0
         self.rank = remaining_work(batch)
         self.order = {b.id: i for i, b in enumerate(batch.all_blocks())}
         self.park_after = None if not max_idle_hold else max(0, max_idle_hold - PARK_MARGIN)
@@ -42,16 +44,42 @@ class _Dispatch(_Greedy):
         self.spot: dict[str, str] = {}          # parked removal id -> parking spot
         self.idle_since: dict[str, int] = {}    # plate -> end of its last block
         self.under_way: set[str] = set()        # workflows with a started block
+        # ready blocks, kept incrementally: compiled blocks whose deps are all done
+        self.succ: dict[str, list[str]] = defaultdict(list)
+        self.missing: dict[str, int] = {}
+        for b in batch.all_blocks():
+            self.missing[b.id] = len(b.deps)
+            for d in b.deps:
+                self.succ[d].append(b.id)
+        self.ready_ids = {bid for bid, n in self.missing.items() if n == 0}
+        self.options: dict[tuple, list] = {}    # binding options, by block/bindings/spot
+        self.occ: dict[str, set[str]] = defaultdict(set)    # nest -> plates (from location)
+        for plate, nest in self.location.items():
+            self.occ[nest].add(plate)
+        self.busy: set[str] = set()             # instruments of running blocks
+        self.locked: set[str] = set()           # plates of running blocks
+
+    # -- state queries (kept incrementally; greedy recomputes them) ----------------
+    def _occupants(self, nest: str) -> list[str]:
+        return sorted(self.occ[nest])
+
+    def _busy_instruments(self) -> set[str]:
+        return self.busy
+
+    def _locked_plates(self) -> set[str]:
+        return self.locked
 
     # -- ordering and binding -------------------------------------------------
     def _current(self, blk: Block) -> Block:
         return blk                      # parked moves are rewritten once bound (_try_bind)
 
     def _ready(self) -> list[Block]:
-        """Workflows under way first (a new one would take shared plates and instruments
-        they wait for), then the most remaining work, then batch order."""
-        return sorted(super()._ready(), key=lambda b: (b.workflow not in self.under_way,
-                                                       -self.rank[b.id], self.order[b.id]))
+        """Released blocks: workflows under way first (a new one would take shared plates and
+        instruments they wait for), then the most remaining work, then batch order."""
+        blocks = (self.batch.block(bid) for bid in self.ready_ids)
+        return sorted((b for b in blocks if self.release.get(b.workflow, 0) <= self.now),
+                      key=lambda b: (b.workflow not in self.under_way,
+                                     -self.rank[b.id], self.order[b.id]))
 
     def _bound(self, blk: Block, new: dict[str, str]) -> Block:
         concrete = blk.bind({**self.bindings[blk.workflow], **new})
@@ -61,8 +89,13 @@ class _Dispatch(_Greedy):
 
     def _try_bind(self, blk: Block):
         """Like greedy, but binding choices go shortest route (block duration) first."""
-        options = sorted(((self._bound(blk, new), new) for new in self._choices(blk)),
-                         key=lambda o: o[0].duration)
+        key = (blk.id, tuple(sorted(self.bindings[blk.workflow].items())),
+               self.spot.get(blk.id))
+        options = self.options.get(key)
+        if options is None:
+            options = self.options[key] = sorted(
+                ((self._bound(blk, new), new) for new in self._choices(blk)),
+                key=lambda o: o[0].duration)
         first_reasons = None
         for concrete, new in options:
             reasons = self._blockers(concrete)
@@ -85,11 +118,23 @@ class _Dispatch(_Greedy):
         for p in blk.plates:
             self.idle_since.pop(p, None)
         self.under_way.add(blk.workflow)
+        self.ready_ids.discard(blk.id)
+        for m in blk.moves:
+            self.occ[self.location[m.plate]].discard(m.plate)
+            self.occ[m.dst].add(m.plate)
+        self.busy |= blk.instruments
+        self.locked |= blk.plates
         super()._start(blk, new_bindings, t)
 
     def _finish(self, bid: str) -> None:
         end = self.running[bid]
         super()._finish(bid)
+        self.busy -= self.blocks[bid].instruments
+        self.locked -= self.blocks[bid].plates
+        for s in self.succ.get(bid, ()):
+            self.missing[s] -= 1
+            if self.missing[s] == 0:
+                self.ready_ids.add(s)
         for p in self.blocks[bid].plates:
             if not self._passive(self.location[p]):
                 self.idle_since[p] = end
@@ -152,6 +197,22 @@ class _Dispatch(_Greedy):
                 return True
         return False
 
+    def _start_one(self, t: int) -> bool:
+        """One pass over the ready blocks in priority order, starting every one that can
+        start (the caller repeats passes until nothing starts)."""
+        self.hotel_full.clear()
+        started = False
+        for cand in self._ready():
+            if cand.id in self.start:
+                continue
+            concrete, new, _ = self._try_bind(cand)
+            if concrete is not None:
+                self._start(concrete, new, t)
+                started = True
+            elif self._park_hook(cand, t):
+                started = True
+        return started
+
     def _deadlines(self, t: int) -> list[int]:
         if self.park_after is None:
             return []
@@ -161,13 +222,15 @@ class _Dispatch(_Greedy):
         t = 0
         compiled = [b.id for b in self.batch.all_blocks()]
         while True:
+            self.now = t
             for bid in sorted(b for b, end in self.running.items() if end == t):
                 self._finish(bid)
             while self._start_one(t) or self._idle_parks(t):
                 pass
             if all(bid in self.done for bid in compiled):
                 return self._plan(mode, "complete")
-            wakes = [*self.running.values(), *self._deadlines(t)]
+            wakes = [*self.running.values(), *self._deadlines(t),
+                     *(r for r in self.release.values() if r > t)]
             if not wakes:
                 ready = self._ready()
                 waits = [Wait(b.id, "; ".join([*self._try_bind(b)[2], *self._hotel_reason(b)]))
@@ -179,9 +242,10 @@ class _Dispatch(_Greedy):
 
 def plan_dispatch(batch: CompiledBatch, max_idle_hold: int | None = None,
                   actual: Callable[[Block], list[int]] | None = None,
-                  mode: str = "jit") -> Plan:
+                  mode: str = "jit", release: dict[str, int] | None = None) -> Plan:
     """Dispatch the batch just in time; returns a "complete" plan or a "deadlock" plan of the
     blocks started before the stall. With `max_idle_hold` (s), the idle rule parks plates;
     with `actual` (bound block -> instruction durations) blocks run that long, and only
-    finished blocks' end times inform decisions (a live run)."""
-    return _Dispatch(batch, max_idle_hold, actual).run(mode)
+    finished blocks' end times inform decisions (a live run). `release` (workflow id -> s)
+    holds a workflow back until then (samples arriving through the day)."""
+    return _Dispatch(batch, max_idle_hold, actual, release or {}).run(mode)
