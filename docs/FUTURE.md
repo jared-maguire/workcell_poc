@@ -16,7 +16,7 @@ Ideas deliberately left out of the current version. Newest at the top of each se
 - **Steps with time limits between them** (e.g. seal within N minutes of dispensing, beads must not sit). The dispatcher has no lookahead, so it can start step A and find step B's instrument busy. This is where lookahead or a planner earns its keep; add such steps to a workflow first and see where dispatch breaks.
 - **Mid-use idle waits.** The idle rule parks only a plate whose next block is a move out. A plate waiting between two uses of the same instrument (e.g. a destination plate on the stamper while its primer is fetched) is never parked.
 - **Forecast during the run.** Today the forecast is made once, with planned times. Re-running the dispatcher from the current state on every event (milliseconds) would give a live ETA per workflow.
-- **CP-SAT as an advisor.** On unit-time PCR (arm-bound, no long steps), CP-SAT still beats dispatch (204 vs 236 on 10 PCRs). It could suggest priorities or bindings to the dispatcher offline. Warm-starting CP-SAT from a dispatch plan didn't take in a quick test (no solution or much worse).
+- **CP-SAT as an advisor.** On unit-time PCR (arm-bound, no long steps), CP-SAT still beats dispatch (204 vs 236 on 10 PCRs). It could suggest priorities or bindings to the dispatcher offline. `run`'s CP-SAT now warm-starts from the dispatcher's plan (it lands next to it on the two-arm library prep: 41,188 vs 41,111 s at 20 s). An earlier try that kept the park options in the model found nothing.
 - **Smarter priorities.** Workflows under way, then most remaining work, was the best of four simple rules tried. The mixed batch (3 library preps plus 4 PCRs) still varies about 50 min across seeds.
 
 ## Carried over from v1
