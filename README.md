@@ -115,7 +115,7 @@ latency: mean 10:57:57, max 23:59:01
 dispatch: 7.25 s
 ```
 
-The run takes about 45 s in all. The report is 13 MB, so it isn't committed.
+The run takes about 45 s in all. Report (13 MB, takes a few seconds to load): https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_10k_live.html.
 
 **What it took to get there** (measured 2026-10-31):
 - **Release through the day.** With all 105 batches released at once, the dispatcher started them all within 8 h. Every batch then took 28–39 h instead of 10 h. Spread over the day, a batch takes the same ~10 h as on an empty cell.
