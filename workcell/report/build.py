@@ -85,7 +85,8 @@ def report_data(session: Session) -> dict:
     for n in wc.nests().values():
         nests.setdefault(n.instrument, []).append({"id": n.id, "capacity": n.capacity})
     return {
-        "instruments": [{"id": i.id, "type": i.type, "nests": nests.get(i.id, [])}
+        "instruments": [{"id": i.id, "type": i.type, "nests": nests.get(i.id, []),
+                         "reach": sorted(i.reach) if i.reach is not None else None}
                         for i in wc.instruments.values()],
         "workflows": [{"id": wf.id, "name": wf.name, "args": _jsonable(wf.args),
                        "owned": sorted(wf.owned), "borrowed": sorted(wf.borrowed)}
@@ -115,6 +116,9 @@ def build_report(session: Session) -> str:
     # data last: it is user content and must not be scanned for placeholders
     for key, value in (("/*__CSS__*/", (_HERE / "report.css").read_text()),
                        ("/*__PYGMENTS_CSS__*/", _pygments_css()),
+                       ("/*__THREE__*/", (_HERE / "vendor" / "three.min.js").read_text()),
+                       ("/*__LAB3D_MODEL__*/", (_HERE / "lab3d_model.js").read_text()),
+                       ("/*__LAB3D__*/", (_HERE / "lab3d.js").read_text()),
                        ("/*__JS__*/", (_HERE / "report.js").read_text()),
                        ("__DATA__", data)):
         html = html.replace(key, value, 1)

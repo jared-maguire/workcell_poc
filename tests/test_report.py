@@ -106,3 +106,20 @@ def test_new_instrument_type_labels(session):
     assert all(label in html for label in
                ('liquid_handler: "liquid handler"', 'vacuum_concentrator: "concentrator"',
                 'liquid_handler: "#d4a72c"', 'handoff: "handoff"'))
+
+
+def test_report_data_reach(session):
+    from conftest import EXAMPLES
+    from workcell.config import load_workcell
+    wc = load_workcell(EXAMPLES / "libprep_2arm.yaml")
+    d = report_data(dataclasses.replace(session, workcell=wc))
+    inst = {i["id"]: i for i in d["instruments"]}
+    assert inst["arm2"]["reach"] == ["dry1", "ho1", "hotel2", "hs2", "lh2", "read2", "spin1", "tc3", "tc4"]
+    assert all(i["reach"] is None for i in d["instruments"] if i["type"] != "arm")
+    assert [i["reach"] for i in report_data(session)["instruments"] if i["type"] == "arm"] == [None]
+
+
+def test_three_inlined(session):
+    html = build_report(session)
+    assert 'const e="128"' in html and "Lab3DModel" in html and "Lab3D" in html
+    assert not re.search(r'(src|href)\s*=\s*["\']https?://', html)
