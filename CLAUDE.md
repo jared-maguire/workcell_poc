@@ -89,3 +89,41 @@ TDD, pytest. Fixtures in `tests/conftest.py` (`SMALL` workcell, `workcell_small`
 - `report.js` builds the view when the card first scrolls into view and calls `update(t)` from `setTime`. The data contract only gained `instruments[].reach`.
 
 `docs/reports/pcr10.html` is a committed example report, served by GitHub Pages at https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10.html. After report changes, regenerate it with the `run` command (`--out docs/reports/pcr10.html`) and update the README results table (CP-SAT numbers shift between runs). `out/` is gitignored scratch.
+
+## Next: real hardware (decided 2026-11-01)
+
+The simulation phase is done; all of it is on master. The scheduling core has proven what simulation can prove. What's left is at the hardware boundary: what devices actually report, how they fail, real step times, and runs that stop halfway. Jared has real instruments, arm included, to hook up the week of 2026-11-02, then real-world integration starts.
+
+**Simulation stays, as the test bench and digital twin.** Simulated instruments stand in for hardware that isn't connected. Every change is rehearsed against them, the 10k day included. Failures are injected there, never on real hardware. Don't drop the simulator or its tests.
+
+**Sequence:**
+1. **Driver interface and real-time executor, against simulated drivers.**
+   - One small interface per instrument type: start a command; report progress, completion or a structured error; report state.
+   - The simulator (`sim/world.py`) becomes one implementation.
+   - The executor runs on wall-clock time, accelerated for tests. It keeps a persistent event log, so it can recover after a controller crash.
+   - The dispatcher's decision rules (`planners/dispatch.py`) carry over unchanged, since they already act only on finished steps. What changes is the loop around them: today `plan_dispatch` steps simulated time and gets durations from `actual`.
+2. **One real instrument, the rest simulated.** Start with the easiest device: a shaker, sealer or thermocycler with a vendor SiLA or serial interface. Run the library prep with it in the loop.
+3. **More devices, the arm last.** The arm is the hardest and the only safety-critical part: taught positions, collisions, grip failures, an emergency stop. Jared runs anything that moves; his eyes are on it the first time.
+
+**New requirements once hardware is real:**
+- At startup, establish which plate is where (inventory), instead of trusting the YAML.
+- Operator controls: pause, abort, and hand-fixing a jammed plate.
+- Error recovery: route around a down instrument and park plates stranded on it.
+- Timeouts on every device command.
+
+**Drivers: SiLA 2.**
+- It's a gRPC standard. Each instrument is a server whose Features hold Commands (observable ones for long runs), Properties and Defined Execution Errors.
+- Rough support for standard picks, researched 2026-11-01; verify with the vendor before relying on any of it:
+  - **Vendor SiLA:** INHECO ODTC thermocycler, Tecan Fluent liquid handler, QInstruments BioShake, Azenta sealers. These often don't say whether they speak SiLA 1 or SiLA 2.
+  - **Community SiLA 2 only:** Agilent VSpin, plate readers (Tecan Spark, EnVision), Universal Robots arms, Thermo RapidStak.
+  - **None found:** head stamper, plate peeler, vacuum concentrator, PreciseFlex arm.
+- Expect a mix of vendor drivers, community drivers and our own wrappers.
+- PyLabRobot (not SiLA) has native backends for some devices, such as VSpin and PreciseFlex.
+
+**To collect at the hookup, per instrument:**
+- make, model and firmware
+- connection (Ethernet, USB or serial; vendor SDK or SiLA, and which version)
+- manuals and command references
+- rough real step times
+- for the arm: its controller and API, taught positions, and how the gripper reports success
+- every error or flaky behavior seen
