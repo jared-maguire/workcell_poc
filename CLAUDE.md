@@ -83,4 +83,9 @@ TDD, pytest. Fixtures in `tests/conftest.py` (`SMALL` workcell, `workcell_small`
 
 `workcell/report/` = `build.py` (Python → JSON contract) + `template.html` / `report.js` / `report.css`, inlined at build time. Must stay self-contained (no network URLs; a test enforces it). JSON is embedded with `<` escaped as `<`. For browser checks, `file://` is blocked in Playwright — serve the directory with `.venv/bin/python -m http.server` instead.
 
+**Lab 3D card** (spec `docs/superpowers/specs/2026-11-01-lab3d-view-design.md`):
+- `lab3d_model.js` is pure (no DOM, no THREE): `timeline` (instruction intervals rebuilt from block start + cumulative durations), `stateAt(t)` and `layout`. `tests/test_lab3d.py` runs it under node (skipped without node), including a check against `trace.events`.
+- `lab3d.js` draws it with `vendor/three.min.js` (r128, UMD, MIT; inlined into every report, about 0.6 MB). Three r128 parses only comma-form `hsl()`.
+- `report.js` builds the view when the card first scrolls into view and calls `update(t)` from `setTime`. The data contract only gained `instruments[].reach`.
+
 `docs/reports/pcr10.html` is a committed example report, served by GitHub Pages at https://jared-maguire.github.io/workcell_poc/docs/reports/pcr10.html. After report changes, regenerate it with the `run` command (`--out docs/reports/pcr10.html`) and update the README results table (CP-SAT numbers shift between runs). `out/` is gitignored scratch.
