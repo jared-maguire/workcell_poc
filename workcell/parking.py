@@ -11,13 +11,14 @@ from workcell.ir import Block, CompiledBatch, PlateMove
 
 def parking_spots(wc: Workcell, near: str | None = None) -> list[str]:
     """Nest ids a plate may be parked in: hotels first, then storage, sorted within each;
-    with `near` (a concrete nest), spots with the shortest route from it come first."""
+    with `near` (a concrete nest), only spots in its group, the shortest route first."""
     nests = wc.nests()
     spots = [n for t in ("hotel", "storage")
              for inst in sorted(wc.of_type(t))
              for n in sorted(nests) if nests[n].instrument == inst]
     if near is None:
         return spots
+    spots = [sp for sp in spots if wc.nest_owner(sp) in wc.group(wc.nest_owner(near))]
     hops = {sp: len(route(wc, wc.nest_owner(near), wc.nest_owner(sp))) for sp in spots}
     return sorted(spots, key=lambda sp: hops[sp])        # stable: hotels before storage
 

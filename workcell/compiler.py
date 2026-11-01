@@ -234,11 +234,17 @@ class _WorkflowCompiler:
         self.counters: dict[str, int] = {}
         self.home = {pid: workcell.plates[bc].location for pid, bc in barcodes.items()}
         self.loc = dict(self.home)
+        groups = {workcell.group(h) for h in self.home.values()}
+        if len(groups) > 1:
+            raise CompileError(f"{wf_id}: its plates start in {len(groups)} separate groups of "
+                               "the workcell (arms not connected through handoff spots)")
+        # a workflow uses only the instruments of its plates' group
+        self.group = groups.pop() if groups else frozenset(workcell.instruments)
         self.stamper: str | None = None
 
     # -- instruments -------------------------------------------------------
     def _instrument(self, itype: str, var: str) -> str:
-        candidates = self.wc.of_type(itype)
+        candidates = [c for c in self.wc.of_type(itype) if c in self.group]
         if not candidates:
             raise CompileError(f"no {itype} instrument available (needed by {self.wf_id})")
         if len(candidates) == 1:

@@ -63,6 +63,8 @@ class Workcell:
     plates: dict[str, Plate]
     durations: dict[str, int] = field(default_factory=lambda: {"default": 1})
     failures: list[FailureSpec] = field(default_factory=list)
+    _groups: dict[str, frozenset[str]] = field(default_factory=dict, init=False, repr=False,
+                                               compare=False)
 
     def nests(self) -> dict[str, Nest]:
         out: dict[str, Nest] = {}
@@ -89,6 +91,24 @@ class Workcell:
         """Arms that can reach `instrument` (an arm without a reach list reaches everything)."""
         return sorted(a for a in self.of_type("arm")
                       if self.instruments[a].reach is None or instrument in self.instruments[a].reach)
+
+    def group(self, instrument: str) -> frozenset[str]:
+        """The instruments connected to `instrument` through arms and handoff spots (all of
+        them when no arm has a reach list). Only handoffs are reached by several arms, so
+        groups meet nowhere else."""
+        if instrument not in self._groups:
+            seen, todo = {instrument}, [instrument]
+            while todo:
+                i = todo.pop()
+                links = (self.instruments[i].reach or self.instruments
+                         if self.instruments[i].type == "arm" else self.arms_reaching(i))
+                for j in links:
+                    if j not in seen:
+                        seen.add(j)
+                        todo.append(j)
+            comp = frozenset(seen)
+            self._groups.update({i: comp for i in comp})
+        return self._groups[instrument]
 
     def of_type(self, t: str) -> list[str]:
         return [i.id for i in self.instruments.values() if i.type == t]
@@ -172,7 +192,7 @@ def parse_workcell(data: dict) -> Workcell:
 
 def _check_reach(wc: Workcell) -> None:
     """Arms only overlap at handoff spots: every other instrument is reached by exactly one
-    arm, and the arms are connected through handoffs."""
+    arm."""
     arms = wc.of_type("arm")
     if all(wc.instruments[a].reach is None for a in arms):
         return
@@ -191,18 +211,8 @@ def _check_reach(wc: Workcell) -> None:
         if len(reachers) > 1 and inst.type != "handoff":
             raise ConfigError(f"instrument {iid!r} is reached by more than one arm "
                               f"({', '.join(reachers)}); only handoff spots may be shared")
-    seen, todo = {arms[0]}, [arms[0]]
-    while todo:
-        a = todo.pop()
-        for h in wc.of_type("handoff"):
-            if a in wc.arms_reaching(h):
-                for b in wc.arms_reaching(h):
-                    if b not in seen:
-                        seen.add(b)
-                        todo.append(b)
-    if len(seen) != len(arms):
-        raise ConfigError(f"arms {', '.join(sorted(set(arms) - seen))} do not connect to "
-                          f"{arms[0]} through handoff spots")
+    # arms need not all connect: a workcell may hold separate groups (each workflow then
+    # stays in its plates' group; see Workcell.group)
 
 
 def load_workcell(path: str | Path) -> Workcell:

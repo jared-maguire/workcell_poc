@@ -113,7 +113,6 @@ def _with(**changes):
 @pytest.mark.parametrize("changes, msg", [
     ({"arm2": ["tc2", "hotel2", "ho1", "tc1"]}, "tc1.*more than one arm"),
     ({"arm2": ["hotel2", "ho1"]}, "tc2.*no arm"),
-    ({"arm2": ["tc2", "hotel2"]}, "connect"),
     ({"arm2": ["tc2", "hotel2", "ho1", "nope"]}, "unknown"),
 ])
 def test_reach_errors(changes, msg):
