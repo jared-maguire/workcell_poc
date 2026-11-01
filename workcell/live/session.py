@@ -42,20 +42,24 @@ class LiveSession:
 def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
              delay_prob: float = 0.02, delay_range: tuple[float, float] = (2.0, 5.0),
              workcell_source: str = "", batch_source: str = "",
-             max_idle_hold: int | None = 300) -> LiveSession:
+             max_idle_hold: int | None = 300,
+             release_every: int | None = None) -> LiveSession:
     """Dispatch the batch just in time against seeded random step times (same seed, same
-    run) and validate what actually happened."""
+    run) and validate what actually happened. With `release_every` (s), workflow i arrives
+    at i x release_every instead of all at the start."""
     max_idle_hold = max_idle_hold or None
     batch = compile_batch(workcell, specs)
+    release = ({wf.id: i * release_every for i, wf in enumerate(batch.workflows)}
+               if release_every else None)
     t0 = time.perf_counter()
-    forecast = plan_dispatch(batch, max_idle_hold, mode="forecast")
+    forecast = plan_dispatch(batch, max_idle_hold, mode="forecast", release=release)
     params = NoiseParams(seed, noise, delay_prob, delay_range)
     planned: dict[str, int] = {}            # block id -> planned duration, as it starts
 
     def actual(blk):
         planned[blk.id] = blk.duration
         return actual_block(params, blk)
-    asrun = plan_dispatch(batch, max_idle_hold, actual=actual, mode="live")
+    asrun = plan_dispatch(batch, max_idle_hold, actual=actual, mode="live", release=release)
     seconds = asrun.solve_seconds = time.perf_counter() - t0
     trace = execute(asrun, batch)
     errors = validate_plan(asrun, batch, check_durations=False)
@@ -75,5 +79,6 @@ def run_live(workcell: Workcell, specs, *, seed: int = 0, noise: float = 0.05,
         dispatch_seconds=seconds)
     run = RunResult("live", asrun, trace, compute_stats(asrun, trace, batch), errors)
     session = Session(workcell, batch, [run], workcell_source, batch_source,
-                      live={"seed": seed, "max_idle_hold": max_idle_hold, "stats": asdict(live)})
+                      live={"seed": seed, "max_idle_hold": max_idle_hold,
+                            "release_every": release_every, "stats": asdict(live)})
     return LiveSession(session, forecast, trace, live, errors)

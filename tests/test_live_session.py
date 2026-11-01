@@ -47,3 +47,11 @@ def test_live_session_idle_stats(workcell_small):
     off = run_live(workcell_small, specs(4), seed=1, max_idle_hold=None)
     assert off.session.live["max_idle_hold"] is None
     assert off.live.idle_violations == 0 and off.errors == []
+
+
+def test_release_every(workcell_small):
+    ls = run_live(workcell_small, specs(3), seed=1, release_every=3600)
+    asrun = ls.session.runs[0].plan
+    assert ls.errors == [] and ls.session.live["release_every"] == 3600
+    for i, wf in enumerate(ls.session.batch.workflows):
+        assert min(asrun.start[b.id] for b in wf.blocks) >= i * 3600

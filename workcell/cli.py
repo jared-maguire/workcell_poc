@@ -62,6 +62,8 @@ def _parser() -> argparse.ArgumentParser:
     live.add_argument("--max-idle-hold", type=int, default=300, metavar="SECONDS",
                       help="longest an instrument may sit idle holding a plate; a plate waiting "
                            "almost this long goes to a hotel or storage (default 300; 0 disables)")
+    live.add_argument("--release-every", type=int, default=0, metavar="SECONDS",
+                      help="workflow i arrives at i x SECONDS (default 0: all at the start)")
     live.add_argument("--out", default="out/live.html", help="report path (default out/live.html)")
     return p
 
@@ -100,7 +102,8 @@ def _live(args) -> int:
     specs, source = load_batch(args.batch)
     ls = run_live(load_workcell(args.workcell), specs, seed=args.seed, noise=args.noise,
                   delay_prob=args.delay_prob, workcell_source=Path(args.workcell).read_text(),
-                  batch_source=source, max_idle_hold=args.max_idle_hold)
+                  batch_source=source, max_idle_hold=args.max_idle_hold,
+                  release_every=args.release_every or None)
     L, s = ls.live, ls.session.runs[0].stats
     print(f"seed: {L.seed}")
     print(f"forecast makespan: {_hms(L.planned_makespan) if L.planned_makespan is not None else '— (deadlock)'}")
@@ -109,6 +112,8 @@ def _live(args) -> int:
         print(f"idle hold: limit {L.max_idle_hold}s, parks {L.parks}, "
               f"violations {L.idle_violations} (worst {L.worst_idle}s)")
     print(f"completed: {s.completed}/{s.total}")
+    if s.mean_latency is not None:
+        print(f"latency: mean {_hms(round(s.mean_latency))}, max {_hms(s.max_latency)}")
     print(f"dispatch: {L.dispatch_seconds:.2f} s")
     if ls.errors:
         print(f"as-run validation errors: {len(ls.errors)}", file=sys.stderr)
