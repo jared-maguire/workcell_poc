@@ -2,7 +2,10 @@
 
 Working notes for the instrument drivers, started 2026-11-03 ahead of the hardware hookup. Nothing here is built yet. The sequence and the hookup checklist are in CLAUDE.md ("Next: real hardware"); these notes collect what we learn per device and the decisions that cut across devices.
 
-One file per device: [inheco-odtc.md](inheco-odtc.md) (thermocycler).
+One file per device:
+- [inheco-odtc.md](inheco-odtc.md): INHECO ODTC thermocycler (SiLA 1.2)
+- [brooks-pf400.md](brooks-pf400.md): Brooks PreciseFlex 400 arm (TCS text commands over TCP)
+- [highres-ambistore.md](highres-ambistore.md): HighRes AmbiStore plate storage (text commands over TCP; no public manual)
 
 ## The interface (draft)
 
@@ -42,8 +45,9 @@ One structured error type for all drivers, so the executor can decide without kn
 - **SiLA 1.2** (SOAP over HTTP): the device posts its completion events back to a URL we register, so the driver runs a small HTTP server and the controller's firewall must let the device reach it. INHECO devices use this.
 - **SiLA 2** (gRPC): a client library per device; observable commands stream progress.
 - **Vendor SDK or serial:** wrapped by our own driver.
+- **Plain text over TCP** (the PF400's TCS, HighRes stores): line-based commands and replies. Frame on line endings, never on packets; after a cut-off reply, reconnect rather than read on.
 
 ## Prior art
 
-- **PyLabRobot** (MIT): backends for some devices, including an experimental ODTC backend and a SiLA 1 interface. Useful as a reference for message formats; thin on timeouts, logging and recovery.
+- **PyLabRobot** (MIT): drivers for all three devices researched so far, of uneven maturity. PreciseFlex is hardware-validated with recorded configurations; the HighRes store driver is verified on SteriStore but not AmbiStore; the ODTC backend is experimental. A reference at least, possibly a dependency.
 - **UniteLabs** SDK: SiLA 2 connectors, some commercial.
