@@ -24,6 +24,7 @@ class World:
             "storage": self._storage,
             "hotel": self._noop,
             "handoff": self._noop,
+            "conveyor": self._conveyor,
             "arm": self._arm,
             "barcode_scanner": self._scanner,
             "head_stamper": self._stamper,
@@ -75,6 +76,13 @@ class World:
 
     def _noop(self, instr: Instruction) -> None:
         raise self._err(instr, f"unsupported op {instr.op!r}")
+
+    def _conveyor(self, instr: Instruction) -> None:
+        if instr.op != "convey":
+            raise self._err(instr, f"unsupported op {instr.op!r}")
+        plate = instr.args["plate"]
+        if self._loc.get(plate) != instr.instrument:
+            raise self._err(instr, f"plate {plate} is not on {instr.instrument}")
 
     # --- storage ---
     def _storage(self, instr: Instruction) -> None:

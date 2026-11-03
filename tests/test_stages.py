@@ -127,13 +127,18 @@ def test_flow_line_example_moves_forward_only():
     order = [s for s, _ in flow.STATIONS]
     session = run_live(wc, [libprep_capture(batch=b) for b in (1, 2, 3)], seed=0)
     assert session.errors == [] and len(session.trace.completed) > 0
-    hops = {}                     # block -> (first src, last dst) of its arm moves (relays too)
-    for e in session.trace.events:
-        if e.op == "move":
-            hops[e.block] = (hops.get(e.block, (e.args["src"],))[0], e.args["dst"])
-    assert any(len({wc.instruments[wc.nest_owner(n)].stage for n in h}) == 2 for h in hops.values())
-    for block, (src, dst) in hops.items():
-        if "hotel" in {wc.instruments[wc.nest_owner(n)].type for n in (src, dst)}:
-            continue              # parking: the zone's own hotel, same arm
-        a, b = (order.index(wc.instruments[wc.nest_owner(n)].stage) for n in (src, dst))
-        assert 0 <= b - a <= 1, (block, src, dst)
+    def stage(nest):
+        return wc.instruments[wc.nest_owner(nest)].stage
+
+    path = {}                     # plate -> stations it visits, in order (belts, hotels: none)
+    for m in sorted(session.trace.moves, key=lambda m: m.time):
+        path.setdefault(m.plate, [stage(m.src)])
+        if stage(m.dst) is not None and stage(m.dst) != path[m.plate][-1]:
+            path[m.plate].append(stage(m.dst))
+    assert any(len(p) > 2 for p in path.values())
+    for plate, p in path.items():
+        steps = [order.index(b) - order.index(a) for a, b in zip(p, p[1:])]
+        assert all(st == 1 for st in steps), (plate, p)
+    belts = {m.dst for m in session.trace.moves
+             if wc.instruments[wc.nest_owner(m.dst)].type == "conveyor"}
+    assert belts == set(wc.of_type("conveyor"))

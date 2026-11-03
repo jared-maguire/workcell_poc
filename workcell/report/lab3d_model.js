@@ -4,7 +4,7 @@
 (function (root) {
   "use strict";
 
-  const PASSIVE = ["arm", "storage", "hotel", "handoff"];     // never glow
+  const PASSIVE = ["arm", "storage", "hotel", "handoff", "conveyor"];     // never glow
 
   function nestOwner(instruments) {
     const owner = {};
@@ -36,11 +36,16 @@
     }));
     const T = instr.reduce((m, i) => Math.max(m, i.t1), 0);
     const passive = new Set(instruments.filter(i => PASSIVE.includes(i.type)).map(i => i.id));
-    return { instr, moves, T, passive };
+    // a plate rides each (one-way) conveyor at most once: its convey, by plate and belt
+    const belts = new Set(instruments.filter(i => i.type === "conveyor").map(i => i.id));
+    const rides = {};
+    for (const i of instr) if (i.op === "convey") rides[i.args.plate + " " + i.instrument] = i;
+    return { instr, moves, T, passive, belts, rides };
   }
 
   // At time t: where every plate is, what each arm carries (`arms`) or where it last put a
-  // plate down (`rest`, nest id), and which instruments are running (`busy`).
+  // plate down (`rest`, nest id), and which instruments are running (`busy`). A plate on a
+  // conveyor also has `u`, how far it has ridden: 0 at the upstream end, 1 at the downstream.
   function stateAt(tl, initialLocations, t) {
     const plates = {};
     for (const [p, nest] of Object.entries(initialLocations || {})) plates[p] = { at: nest };
@@ -53,6 +58,11 @@
         plates[m.plate] = carry;
         arms[m.arm] = { plate: m.plate, src: m.src, dst: m.dst, u: carry.u };
       }
+    }
+    for (const [p, s] of Object.entries(plates)) {
+      if (s.at === undefined || !(tl.belts || new Set()).has(s.at)) continue;
+      const c = tl.rides[p + " " + s.at];
+      s.u = !c || t <= c.t0 ? 0 : t >= c.t1 ? 1 : (t - c.t0) / (c.t1 - c.t0);
     }
     const busy = new Set();
     for (const i of tl.instr) {

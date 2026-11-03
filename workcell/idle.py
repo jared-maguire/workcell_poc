@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from workcell.ir import Block, CompiledBatch
 
-_PARKING = ("storage", "hotel")
+_PARKING = ("storage", "hotel", "conveyor")      # not instrument nests: no idle limit
 
 
 @dataclass

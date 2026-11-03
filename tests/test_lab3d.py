@@ -204,3 +204,43 @@ def test_layout_several_arms_without_reach(tmp_path):
     insts = [_arm("a1", None), _arm("a2", None), _inst("s", "storage"), _inst("t"), _inst("u")]
     r = _layout_check(insts, tmp_path)
     assert r["far"] == [] and r["close"] >= 0.9
+
+
+@pytest.fixture(scope="module")
+def belt_run():
+    """The conveyor test's two stations: four plates ride the belt from arm_a to arm_b."""
+    from test_conveyor import a_then_b, belt
+    session = run_live(belt(), [a_then_b(i) for i in range(4)], seed=0).session
+    return report_data(session), session.runs[0].trace
+
+
+def test_report_data_conveyor_direction(belt_run):
+    d, _ = belt_run
+    (c,) = [i for i in d["instruments"] if i["type"] == "conveyor"]
+    assert c["to"] == "arm_b" and c["seconds"] == 200
+
+
+def test_state_plate_rides_the_belt(belt_run, tmp_path):
+    d, _ = belt_run
+    c, put, ride, start, mid, end, off = js(f"""{{
+        const tl = {TL}, L = D.runs[0].initial_locations;
+        const c = tl.instr.find(i => i.op === "convey"), p = c.args.plate;
+        const put = tl.moves.find(m => m.plate === p && m.dst === c.instrument);
+        const take = tl.moves.find(m => m.plate === p && m.src === c.instrument);
+        const at = t => M.stateAt(tl, L, t).plates[p];
+        return [c, put, take, at(c.t0), at((c.t0 + c.t1) / 2), at(c.t1 - 1), at(take.t1)];
+    }}""", d, tmp_path)
+    assert put["t1"] <= c["t0"] and c["t1"] <= ride["t0"]
+    assert start == {"at": "belt", "u": 0}
+    assert mid == {"at": "belt", "u": 0.5}
+    assert end["at"] == "belt" and 0.99 < end["u"] < 1    # (live times are noisy) taken at once
+    assert off["at"] != "belt"
+
+
+def test_belt_never_glows(belt_run, tmp_path):
+    d, _ = belt_run
+    lit = js(f"""{{
+        const tl = {TL}, L = D.runs[0].initial_locations;
+        return tl.instr.filter(i => i.op === "convey").some(c => M.stateAt(tl, L, (c.t0 + c.t1) / 2).busy.has("belt"));
+    }}""", d, tmp_path)
+    assert lit is False

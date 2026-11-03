@@ -32,11 +32,14 @@ class PlateMove:
     dst: str
 
 
+# ops that do not lock their instrument (a conveyor carries several plates at once)
+UNLOCKED_OPS = frozenset({"convey"})
+
 @dataclass
 class Block:
     id: str
     workflow: str
-    kind: Literal["fetch", "scan", "move", "op", "return", "park"]
+    kind: Literal["fetch", "scan", "move", "op", "return", "park", "convey"]
     label: str
     instructions: list[Instruction]
     moves: list[PlateMove]
@@ -54,7 +57,9 @@ class Block:
 
     @property
     def instruments(self) -> set[str]:
-        return {i.instrument for i in self.instructions}
+        """The block's lock set (with its plates). A conveyor carrying a plate is not locked:
+        other plates ride it too, up to its nest capacity."""
+        return {i.instrument for i in self.instructions if i.op not in UNLOCKED_OPS}
 
     def bind(self, bindings: dict[str, str]) -> Block:
         def arg(v):

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import dataclasses
 
-from workcell.compiler import route, transport_instructions
+from workcell.compiler import CompileError, route, transport_instructions
 from workcell.config import Workcell
 from workcell.ir import Block, CompiledBatch, PlateMove
 
 
 def parking_spots(wc: Workcell, near: str | None = None) -> list[str]:
     """Nest ids a plate may be parked in: hotels first, then storage, sorted within each;
-    with `near` (a concrete nest), only spots in its group, the shortest route first."""
+    with `near` (a concrete nest), only spots in its group reachable without a conveyor, the
+    shortest route first."""
     nests = wc.nests()
     spots = [n for t in ("hotel", "storage")
              for inst in sorted(wc.of_type(t))
@@ -19,8 +20,16 @@ def parking_spots(wc: Workcell, near: str | None = None) -> list[str]:
     if near is None:
         return spots
     spots = [sp for sp in spots if wc.nest_owner(sp) in wc.group(wc.nest_owner(near))]
-    hops = {sp: len(route(wc, wc.nest_owner(near), wc.nest_owner(sp))) for sp in spots}
-    return sorted(spots, key=lambda sp: hops[sp])        # stable: hotels before storage
+    routes = {}
+    for sp in spots:
+        try:
+            routes[sp] = route(wc, wc.nest_owner(near), wc.nest_owner(sp))
+        except CompileError:        # upstream of a one-way conveyor
+            continue
+    # a park is one move: never across a conveyor
+    spots = [sp for sp in routes
+             if not any(h and wc.instruments[h].type == "conveyor" for _, _, h in routes[sp])]
+    return sorted(spots, key=lambda sp: len(routes[sp]))  # stable: hotels before storage
 
 
 def _times(batch: CompiledBatch, wf_id: str) -> dict[str, int] | None:

@@ -19,7 +19,7 @@
     head_stamper: [0.8, 0.9, 0.7], thermocycler: [0.7, 0.55, 0.7], liquid_handler: [1.0, 0.8, 0.8],
     heated_shaker: [0.6, 0.35, 0.6], plate_sealer: [0.6, 0.6, 0.6], plate_peeler: [0.6, 0.6, 0.6],
     plate_reader: [0.7, 0.45, 0.6], vacuum_concentrator: [0.8, 0.7, 0.7], centrifuge: [0.8, 0.6, 0.8],
-    handoff: [0.5, 0.15, 0.5],
+    handoff: [0.5, 0.15, 0.5], conveyor: [1, 0.3, 0.55],    // a conveyor's length is set by its arms
   };
   const STACKED = new Set(["storage", "hotel"]);
   const MAX_STACK = 6;
@@ -73,11 +73,21 @@
     // instruments: a body facing its arm, a status strip, a label
     const instObj = {};
     for (const [id, [x, z]] of Object.entries(L.pos)) {
-      const type = byId[id].type, [w, h, d] = SIZE[type] || [0.6, 0.5, 0.6];
+      const type = byId[id].type;
+      let [w, h, d] = SIZE[type] || [0.6, 0.5, 0.6];
       const g = new THREE.Group();
       g.position.set(x, 0, z);
       const armId = Object.keys(L.arms).find(a => (byId[a].reach || Object.keys(L.pos)).includes(id));
-      if (armId && type !== "handoff") g.rotation.y = Math.atan2(L.arms[armId].at[0] - x, L.arms[armId].at[1] - z);
+      if (type === "conveyor") {
+        // a belt along the line from the upstream arm to its `to` arm, half the gap between them
+        const down = L.arms[byId[id].to], up = L.arms[Object.keys(L.arms).find(a =>
+          a !== byId[id].to && (byId[a].reach || []).includes(id))];
+        if (up && down) {
+          const dx = down.at[0] - up.at[0], dz = down.at[1] - up.at[1];
+          w = Math.hypot(dx, dz) * 0.5;
+          g.rotation.y = Math.atan2(-dz, dx);              // local +x points downstream
+        }
+      } else if (armId && type !== "handoff") g.rotation.y = Math.atan2(L.arms[armId].at[0] - x, L.arms[armId].at[1] - z);
       const body = box(w, h, d, new THREE.MeshStandardMaterial({ roughness: 0.85 }), edgeMat);
       body.position.y = h / 2;
       const strip = new THREE.Mesh(boxGeo, new THREE.MeshBasicMaterial());
@@ -193,18 +203,22 @@
       pose(lastT, lastSpeed);
     }
 
-    // where a plate sits on an instrument: on top, side by side for two nests, stacked in storage
+    // where a plate sits on an instrument: on top, side by side for two nests, stacked in storage,
+    // or on a conveyor `u` of the way along (0 = upstream end, 1 = downstream end)
     const tmp = new THREE.Vector3();
-    function restingSpot(nest, k) {
+    function restingSpot(nest, k, u) {
       const o = instObj[owner[nest]];
       if (!o) return null;
       const local = new THREE.Vector3(0, o.h + PLATE[1] / 2 + 0.02, 0);
-      if (STACKED.has(o.type)) local.y += k * (PLATE[1] + 0.03);
+      if (o.type === "conveyor") local.x = ((u || 0) - 0.5) * o.w * 0.85;
+      else if (STACKED.has(o.type)) local.y += k * (PLATE[1] + 0.03);
       else if (nest.endsWith(".src")) local.x = -o.w / 4;
       else if (nest.endsWith(".dst")) local.x = o.w / 4;
       else local.x = (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.12;
       return o.g.localToWorld(local);
     }
+    // a move's ends: a plate is taken off a belt at its downstream end, put on at its upstream end
+    const fromSpot = nest => restingSpot(nest, 0, 1), toSpot = nest => restingSpot(nest, 0, 0);
     // a point along an arm's move, swinging around the arm's base, lifted in the middle
     function along(arm, a, b, u) {
       const base = armObj[arm].base.position;
@@ -239,7 +253,7 @@
         while (lo <= hi) { const mid = (lo + hi) >> 1; if (ms[mid].t0 <= t) { k = mid; lo = mid + 1; } else hi = mid - 1; }
         const m = k >= 0 ? ms[k] : null;
         if (!m || t >= m.t1 + linger || !armObj[m.arm]) { tr.visible = false; continue; }
-        const a = restingSpot(m.src, 0), b = restingSpot(m.dst, 0);
+        const a = fromSpot(m.src), b = toSpot(m.dst);
         if (!a || !b) { tr.visible = false; continue; }
         const u = m.t1 > m.t0 ? Math.min(1, (t - m.t0) / (m.t1 - m.t0)) : 1;
         const pos = tr.geometry.attributes.position;
@@ -265,7 +279,7 @@
         const o = instObj[inst];
         if (!o) { for (const [, id] of list) if (plates[id]) plates[id].visible = false; continue; }
         list.forEach(([nest, id], k) => {
-          const p = plates[id], spot = restingSpot(nest, k);
+          const p = plates[id], spot = restingSpot(nest, k, st.plates[id].u);
           if (!p) return;
           p.visible = !!spot && !(STACKED.has(o.type) && k >= MAX_STACK);   // always on top, so it stays in view
           if (spot) { p.position.copy(spot); p.rotation.y = o.g.rotation.y; }
@@ -286,14 +300,14 @@
       for (const arm of Object.keys(armObj)) {
         const c = st.arms[arm];
         if (c) {
-          const a = restingSpot(c.src, 0), b = restingSpot(c.dst, 0);
+          const a = fromSpot(c.src), b = toSpot(c.dst);
           const p = along(arm, a, b, c.u);
           reach(arm, p);
           const pl = plates[c.plate];
           pl.visible = true; pl.position.copy(p);
         } else {
           const nest = st.rest[arm], base = armObj[arm].base.position;
-          const spot = nest !== undefined && restingSpot(nest, 0);
+          const spot = nest !== undefined && toSpot(nest);
           reach(arm, spot ? new THREE.Vector3(spot.x, spot.y + 0.4, spot.z)
                           : new THREE.Vector3(base.x + armObj[arm].link, SHOULDER - 0.6, base.z));
         }

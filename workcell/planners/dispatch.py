@@ -13,7 +13,7 @@ from workcell.parking import park_pair, parking_spots
 from workcell.plan import Deadlock, Plan, Wait
 from workcell.planners.greedy import _Greedy
 
-PASSIVE = ("storage", "hotel", "handoff")
+PASSIVE = ("storage", "hotel", "handoff", "conveyor")
 PARK_MARGIN = 60    # the idle rule parks a plate this many seconds before the limit
 
 

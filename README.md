@@ -141,7 +141,8 @@ A–C keep up with 105 batches a day, and latency doesn't grow through the day. 
 
 The alternative to separate lines is one flow line, an assembly line in process order. `examples/make_libprep_flow.py` generates `examples/libprep_flow.yaml`.
 - **Stations:** one per stage of the protocol, 11 in all: start, tag, stop, index, pcr, cleanup, pool, hyb, capture, wash, final.
-- **Arms:** 6, each serving one to two neighbouring stations, with a handoff spot to the next arm's zone.
+- **Arms:** 6, each serving one or two neighbouring stations.
+- **Conveyors** join each arm's zone to the next. One arm puts a plate on, the belt carries it for 30 s without holding either arm, and the next arm takes it off. A belt holds up to 6 plates and runs one way.
 - **Every batch passes every station**, and plates only move forward, one station at a time. Pre-amp is upstream of "pcr" and post-amp downstream.
 - **Pooling:** each station is shared by all batches. The hybridization station is a bank of 20 thermocyclers.
 - **Stages:** the workflow marks its stations with `w.stage("hyb")` etc. In a workcell whose instruments carry `stage:` labels, a step binds only to its station's instruments, and `store` goes to its station's storage. Workcells without stages ignore the marks, so the same `libprep_capture.py` runs on both layouts.
@@ -151,17 +152,39 @@ The alternative to separate lines is one flow line, an assembly line in process 
 ```
 ```
 seed: 0
-forecast makespan: 33:33:26
-actual makespan:   36:02:18
-idle hold: limit 300s, parks 518, violations 57 (worst 654s)
+forecast makespan: 33:33:52
+actual makespan:   34:07:55
+idle hold: limit 300s, parks 338, violations 46 (worst 636s)
 completed: 105/105
-latency: mean 11:31:32, max 24:12:12
-dispatch: 9.10 s
+latency: mean 10:32:19, max 12:56:34
+dispatch: 8.91 s
 ```
 
-Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_flow_live.html (14 MB).
+Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_flow_live.html (14 MB). The 3D view shows plates riding the belts.
 
-**Compared with 4 lines (configuration C above), measured 2026-11-02.** Both keep up with the day at about the same latency. The flow line needs somewhat less hardware, chiefly 2 fewer arms and 6 fewer plate readers:
+**Conveyors** (`type: conveyor`, with `slots`, `seconds` and `to`, the arm it carries plates to):
+- A move across one is three blocks: put on (upstream arm), `convey` (locks only the plate), take off (downstream arm).
+- A belt is never locked. Several plates ride at once, up to `slots`.
+- Time on a belt is not an idle hold, and plates are never parked across one.
+- Belts run one way, so no route goes back upstream. Two-way belts deadlocked in testing: a plate riding toward a busy instrument met a plate on that instrument waiting to ride back.
+- `--belt-seconds 0` joins the zones with handoff spots instead, where a move between zones holds both arms.
+
+**How many arms?** Latency is measured from arrival, seeds 0 and 1; violations are for seed 0. Measured 2026-11-02.
+
+| layout | arms | median latency | 90th percentile | idle-hold violations (worst) |
+|---|---|---|---|---|
+| 4 separate lines (as generated) | 8 | 10.3 / 10.2 h | 11.9 / 10.8 h | 50 (555 s) |
+| flow line, conveyors (the default) | 6 | 10.5 / 10.5 h | 11.3 / 11.3 h | 46 (636 s) |
+| flow line, handoff spots | 6 | 11.0 / 10.5 h | 12.7 / 11.0 h | 57 (654 s) |
+| flow line, conveyors | 5 | 10.9 / 10.8 h | 12.0 / 11.8 h | 58 (558 s) |
+| flow line, conveyors | 4 | 11.0 / 10.7 h | 12.4 / 12.3 h | 122 (895 s) |
+| flow line, conveyors | 3 | 14.2 / 14.9 h | 16.9 / 16.6 h | 272 (1264 s) |
+
+- **Conveyors let the line share arms.** One arm per station left each under 15% busy. With belts, 6 arms match the separate lines, 4 still keep up with the day, and 3 fall behind.
+- **Without belts, 6 arms do noticeably worse.** A move between zones holds both arms.
+- **Storage stations load an arm most,** because a 60 s retrieve or store holds it. The zones give them fewer neighbours.
+
+**Hardware, compared with 4 lines (configuration C above, which also keeps up):**
 
 | | 4 lines (C) | flow line |
 |---|---|---|
@@ -171,22 +194,14 @@ Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_flow_l
 | vacuum concentrators | 4 | 5 |
 | plate readers | 8 | 2 |
 | head stampers | 4 | 3 |
-| arms | 8 | 6 |
+| arms | 8 | 6 (4 at a little more latency) |
+| conveyors | 0 | 5 |
 | storages / scanners / hotels | 4 / 4 / 8 | 6 / 6 / 6 |
 
-- **The flow line saves** the instruments a line owns but barely uses: readers, stampers, a few liquid handlers.
-- **It costs** more storages and scanners: one at each station that adds or archives plates.
-- **Fewer arms means more waiting.** With one arm per station, each was under 15% busy. Sharing arms across stations trades arms for idle holds, since plates wait for a busy arm. Storage stations load an arm most, because a 60 s retrieve or store holds it.
-
-  | arms | mean latency | idle-hold violations (worst) |
-  |---|---|---|
-  | 11 (one per station) | 11:21 | 31 (467 s) |
-  | 6 (the default) | 11:32 | 57 (654 s) |
-  | 5 | 11:37 | 95 (655 s) |
-  | 4 | 11:42 | 178 (940 s) |
-  | *4 lines, 8 arms* | *10:58* | *50 (555 s)* |
-
-- **Its real advantages aren't in the counts:** plates never go back upstream, which is the pre-amp/post-amp rule built in, and every batch draws on the whole bank at each station.
+- **The flow line saves** arms and the instruments a line owns but barely uses: readers, stampers, a few liquid handlers.
+- **It costs** conveyors, and more storages and scanners: one at each station that adds or archives plates.
+- **Plates never go back upstream,** which builds in the pre-amp/post-amp rule. Every batch draws on the whole bank at each station.
+- **The separate lines still win on robustness.** A down instrument costs a quarter of the lab, not the whole line. Several flow-line stations have a single liquid handler.
 - **Sizing it** was arithmetic: about (time per batch on a station's instrument type ÷ 823 s), plus slack. One trim too far showed exactly where: with 2 liquid handlers at "final", batches queued there about 13 h each.
 
 ## Quickstart

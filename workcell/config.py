@@ -12,9 +12,12 @@ STEP_TYPES = frozenset({"liquid_handler", "heated_shaker", "plate_sealer", "plat
 # Instrument types with two plate positions, `<id>.src` and `<id>.dst`.
 TWO_POSITION_TYPES = frozenset({"head_stamper", "liquid_handler"})
 INSTRUMENT_TYPES = frozenset(
-    {"arm", "storage", "hotel", "handoff", "barcode_scanner", "head_stamper", "thermocycler"}
+    {"arm", "storage", "hotel", "handoff", "conveyor", "barcode_scanner", "head_stamper",
+     "thermocycler"}
     | STEP_TYPES
 )
+# Instruments several arms may reach: where arm zones meet.
+SHARED_TYPES = frozenset({"handoff", "conveyor"})
 
 
 UNLIMITED_HOTEL_SLOTS = 10**9      # a hotel without `slots`: capacity is a v1 non-goal
@@ -33,6 +36,8 @@ class Instrument:
     slots: int | None = None
     reach: frozenset[str] | None = None     # arms: instruments it can reach (None = all)
     stage: str | None = None                # station of a flow line (see Workflow.stage)
+    seconds: int | None = None              # conveyors: time to carry a plate across
+    to: str | None = None                   # conveyors: the arm it carries plates to (one way)
 
 
 @dataclass(frozen=True)
@@ -75,7 +80,7 @@ class Workcell:
                 if slots is None:
                     slots = UNLIMITED_HOTEL_SLOTS if inst.type == "hotel" else 1
                 out[inst.id] = Nest(inst.id, inst.id, slots)
-            elif inst.type == "handoff":
+            elif inst.type in SHARED_TYPES:      # a conveyor holds `slots` plates in transit
                 out[inst.id] = Nest(inst.id, inst.id, inst.slots or 1)
             elif inst.type in TWO_POSITION_TYPES:
                 for suffix in ("src", "dst"):
@@ -95,7 +100,7 @@ class Workcell:
 
     def group(self, instrument: str) -> frozenset[str]:
         """The instruments connected to `instrument` through arms and handoff spots (all of
-        them when no arm has a reach list). Only handoffs are reached by several arms, so
+        them when no arm has a reach list). Only handoffs and conveyors are reached by several arms, so
         groups meet nowhere else."""
         if instrument not in self._groups:
             seen, todo = {instrument}, [instrument]
@@ -157,11 +162,18 @@ def parse_workcell(data: dict) -> Workcell:
             raise ConfigError(f"duplicate instrument id {iid!r}")
         if itype == "storage" and raw.get("slots") is None:
             raise ConfigError(f"storage {iid!r} needs 'slots'")
+        if itype == "conveyor":
+            for key in ("slots", "seconds"):
+                if not isinstance(raw.get(key), int) or raw[key] < 1:
+                    raise ConfigError(f"conveyor {iid!r} needs '{key}' (a positive integer)")
+            if not isinstance(raw.get("to"), str):
+                raise ConfigError(f"conveyor {iid!r} needs 'to': the arm it carries plates to")
         reach, stage = raw.get("reach"), raw.get("stage")
         if stage is not None and not isinstance(stage, str):
             raise ConfigError(f"instrument {iid!r}: stage must be a string, got {stage!r}")
         instruments[iid] = Instrument(iid, itype, raw.get("slots"),
-                                      frozenset(reach) if reach is not None else None, stage)
+                                      frozenset(reach) if reach is not None else None, stage,
+                                      raw.get("seconds"), raw.get("to"))
 
     plates: dict[str, Plate] = {}
 
@@ -194,8 +206,8 @@ def parse_workcell(data: dict) -> Workcell:
 
 
 def _check_reach(wc: Workcell) -> None:
-    """Arms only overlap at handoff spots: every other instrument is reached by exactly one
-    arm."""
+    """Arms only overlap at handoff spots and conveyors: every other instrument is reached by
+    exactly one arm."""
     arms = wc.of_type("arm")
     if all(wc.instruments[a].reach is None for a in arms):
         return
@@ -211,9 +223,13 @@ def _check_reach(wc: Workcell) -> None:
         reachers = wc.arms_reaching(iid)
         if not reachers:
             raise ConfigError(f"instrument {iid!r} is reached by no arm")
-        if len(reachers) > 1 and inst.type != "handoff":
+        if inst.type == "conveyor" and (len(reachers) != 2 or inst.to not in reachers):
+            raise ConfigError(f"conveyor {iid!r} must be reached by two arms, one of them its "
+                              f"'to' arm {inst.to!r} (reached by {', '.join(reachers)})")
+        if len(reachers) > 1 and inst.type not in SHARED_TYPES:
             raise ConfigError(f"instrument {iid!r} is reached by more than one arm "
-                              f"({', '.join(reachers)}); only handoff spots may be shared")
+                              f"({', '.join(reachers)}); only handoff spots and conveyors "
+                              "may be shared")
     # arms need not all connect: a workcell may hold separate groups (each workflow then
     # stays in its plates' group; see Workcell.group)
 

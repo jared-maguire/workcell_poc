@@ -53,7 +53,7 @@ def route(workcell: Workcell, src_owner: str, dst_owner: str,
     common = sorted(set(first) & set(last))
     if common:
         return [(common[0], None, None)]
-    handoffs = sorted(workcell.of_type("handoff"))
+    handoffs = sorted(workcell.of_type("handoff") + workcell.of_type("conveyor"))
     prev: dict[str, tuple[str, str] | None] = {a: None for a in sorted(first)}
     todo = sorted(first)
     while todo:
@@ -72,6 +72,8 @@ def route(workcell: Workcell, src_owner: str, dst_owner: str,
             reachers = workcell.arms_reaching(h)
             if a in reachers:
                 for b in reachers:
+                    if workcell.instruments[h].to not in (None, b):
+                        continue                # conveyors run one way
                     if b not in prev:
                         prev[b] = (a, h)
                         todo.append(b)
@@ -115,7 +117,8 @@ def transport_instructions(workcell: Workcell, plate: str, src: str, dst: str,
     def ins(instrument: str, op: str, args: dict | None = None) -> Instruction:
         return Instruction(instrument, op, args or {}, _duration(workcell, types[instrument], op, times))
 
-    out = [ins(name, "check_status") for name in dict.fromkeys((src_owner, arm, dst_owner))]
+    out = [ins(name, "check_status") for name in dict.fromkeys((src_owner, arm, dst_owner))
+           if types[name] != "conveyor"]           # never locked (see Block.instruments)
     if types[src_owner] == "storage":
         out.append(ins(src_owner, "retrieve", {"plate": plate}))
     doors = [n for n in dict.fromkeys((src_owner, dst_owner)) if types[n] == "thermocycler"]
@@ -131,6 +134,9 @@ def _relay(workcell: Workcell, plate: str, src: str, dst: str, hops, var_types, 
     """A move relayed through handoff spots, as one instruction list: check everything on the
     route, then each arm's hop (doors open just around the hop that uses them)."""
     src_owner, dst_owner = workcell.nest_owner(src), workcell.nest_owner(dst)
+    if any(h and workcell.instruments[h].type == "conveyor" for _, a, b in hops for h in (a, b)):
+        raise CompileError(f"a move from {src} to {dst} crosses a conveyor: it must be split "
+                           "into put on, convey, take off")
     chain = [src_owner] + [n for arm, _, h in hops for n in (arm, h) if n] + [dst_owner]
     chain = list(dict.fromkeys(chain))
 
@@ -286,8 +292,32 @@ class _WorkflowCompiler:
                                  set(plates), list(dict.fromkeys(deps)), variants=variants))
         return bid
 
+    def _belt(self, src: str, dst: str) -> str | None:
+        """The first conveyor on the route from nest `src` to nest `dst` (None if none). The
+        same for every binding of the route's variables, or a CompileError."""
+        names = sorted({n.partition('.')[0] for n in (src, dst) if n.startswith('?')})
+        belts = set()
+        for combo in itertools.product(*(self.variables.get(v, [v]) for v in names)):
+            bind = dict(zip(names, combo))
+            hops = route(self.wc, self.wc.nest_owner(resolve(src, bind)),
+                         self.wc.nest_owner(resolve(dst, bind)))
+            belts.add(next((h for _, _, h in hops
+                            if h and self.wc.instruments[h].type == "conveyor"), None))
+        if len(belts) > 1:
+            raise CompileError(f"{self.wf_id}: the conveyor between {src} and {dst} depends on "
+                               "how instruments are bound")
+        return belts.pop()
+
     def _transport(self, kind, pid: str, dst: str, deps: list[str]) -> str:
         bc, src = self.barcodes[pid], self.loc[pid]
+        belt = self._belt(src, dst)
+        if belt is not None:        # across a conveyor: put on, carry (locks only the plate), take off
+            put = self._transport("move", pid, belt, deps)
+            ride = self._emit("convey", f"convey {bc} {belt}",
+                              [Instruction(belt, "convey", {"plate": bc},
+                                           self.wc.instruments[belt].seconds)],
+                              [], {bc}, [put])
+            return self._transport(kind, pid, dst, [ride])
         variants = None
         try:
             instrs = transport_instructions(self.wc, bc, src, dst, self.var_types,
