@@ -125,10 +125,13 @@ The simulation phase is done; all of it is on master. The scheduling core has pr
 - It's a gRPC standard. Each instrument is a server whose Features hold Commands (observable ones for long runs), Properties and Defined Execution Errors.
 - Rough support for standard picks, researched 2026-11-01; verify with the vendor before relying on any of it:
   - **Vendor SiLA:** INHECO ODTC thermocycler, Tecan Fluent liquid handler, QInstruments BioShake, Azenta sealers. These often don't say whether they speak SiLA 1 or SiLA 2.
+  - **INHECO ODTC is SiLA 1.2** (SOAP over HTTP, events posted back to us), not SiLA 2; checked against its command manual 2026-11-03.
   - **Community SiLA 2 only:** Agilent VSpin, plate readers (Tecan Spark, EnVision), Universal Robots arms, Thermo RapidStak.
   - **None found:** head stamper, plate peeler, vacuum concentrator, PreciseFlex arm.
 - Expect a mix of vendor drivers, community drivers and our own wrappers.
 - PyLabRobot (not SiLA) has native backends for some devices, such as VSpin and PreciseFlex.
+
+**Driver notes:** `docs/drivers/` (cross-cutting decisions in its README, one file per device). Add to them as devices are researched and hooked up.
 
 **To collect at the hookup, per instrument:**
 - make, model and firmware
