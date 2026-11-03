@@ -240,23 +240,38 @@ class _WorkflowCompiler:
                                "the workcell (arms not connected through handoff spots)")
         # a workflow uses only the instruments of its plates' group
         self.group = groups.pop() if groups else frozenset(workcell.instruments)
-        self.stamper: str | None = None
+        # flow line: ops marked with w.stage(...) bind only to that station's instruments
+        self.staged = any(workcell.instruments[i].stage for i in self.group)
+        self.stage: str | None = None           # the current op's stage (None = unstaged)
+        self.var_stage: dict[str, str | None] = {}
+        self.stampers: dict[str | None, str] = {}
 
     # -- instruments -------------------------------------------------------
-    def _instrument(self, itype: str, var: str) -> str:
+    def _instrument(self, itype: str, var: str, stage: str | None = None) -> str:
         candidates = [c for c in self.wc.of_type(itype) if c in self.group]
+        if stage is not None:
+            candidates = [c for c in candidates if self.wc.instruments[c].stage == stage]
+            if not candidates:
+                raise CompileError(f"no {itype} instrument at stage {stage!r} "
+                                   f"(needed by {self.wf_id})")
         if not candidates:
             raise CompileError(f"no {itype} instrument available (needed by {self.wf_id})")
         if len(candidates) == 1:
             return candidates[0]
         self.variables[var] = list(candidates)
         self.var_types[var] = itype
+        self.var_stage[var] = stage
         return var
 
-    def _numbered(self, itype: str, prefix: str) -> str:
+    def _numbered(self, itype: str, prefix: str, stage: str | None = None) -> str:
         k = self.counters.get(prefix, 0)
         self.counters[prefix] = k + 1
-        return self._instrument(itype, f"?{prefix}{k}")
+        return self._instrument(itype, f"?{prefix}{k}", stage)
+
+    def _stage_of(self, name: str) -> str | None:
+        if name.startswith("?"):
+            return self.var_stage.get(name)
+        return self.wc.instruments[name].stage
 
     def _ins(self, instrument: str, op: str, args: dict | None = None,
              own: int | None = None) -> Instruction:
@@ -297,7 +312,8 @@ class _WorkflowCompiler:
         if _type_of(self.wc, owner, self.var_types) != "storage":
             return self._transport("move", pid, dst, deps)
         bc = self.barcodes[pid]
-        scanner = self._numbered("barcode_scanner", "scan")
+        scanner = self._numbered("barcode_scanner", "scan",
+                                 self._stage_of(owner) if self.staged else None)
         fetch = self._transport("fetch", pid, scanner, deps)
         scan = self._emit("scan", f"scan {bc}",
                           [self._ins(scanner, "check_status"),
@@ -315,21 +331,26 @@ class _WorkflowCompiler:
             return [b for o in op_ids for b in op_end[o]]
 
         for op in order:
+            self.stage = op.stage if self.staged else None
             deps = ends(op_deps[op.id])
             for pid in op.plates:
                 last_op[pid] = op.id
             if op.kind == "store":
                 (pid,) = op.plates
                 stored.add(pid)
-                if self.loc[pid] == self.home[pid]:
+                # flow line: into the station's own storage, not back up the line
+                dst = (self._numbered("storage", "store", self.stage) if self.stage is not None
+                       else self.home[pid])
+                if self.loc[pid] == dst:
                     op_end[op.id] = deps
                 else:
-                    op_end[op.id] = [self._transport("return", pid, self.home[pid], deps)]
+                    op_end[op.id] = [self._transport("return", pid, dst, deps)]
                 continue
             if op.kind == "stamp":
-                if self.stamper is None:
-                    self.stamper = self._instrument("head_stamper", "?stamp")
-                inst = self.stamper
+                if self.stage not in self.stampers:     # one stamper per workflow (per stage)
+                    self.stampers[self.stage] = self._instrument(
+                        "head_stamper", f"?stamp{len(self.stampers) or ''}", self.stage)
+                inst = self.stampers[self.stage]
                 nests = [f"{inst}.src", f"{inst}.dst"]
                 src, dst = (self.barcodes[p] for p in op.plates)
                 instr = self._ins(inst, "stamp", {"src": src, "dst": dst},
@@ -343,17 +364,18 @@ class _WorkflowCompiler:
                         f"({', '.join(sorted(STEP_TYPES))}); use stamp/thermocycle/store")
                 here = self.loc[op.plates[0]]
                 owner = self.wc.nest_owner(here)
-                if len(op.plates) == 1 and _type_of(self.wc, owner, self.var_types) == itype:
+                if (len(op.plates) == 1 and _type_of(self.wc, owner, self.var_types) == itype
+                        and (self.stage is None or self._stage_of(owner) == self.stage)):
                     inst, nests = owner, [here]     # already on one: stay (no move to itself)
                 else:
-                    inst = self._numbered(itype, _PREFIX.get(itype, itype))
+                    inst = self._numbered(itype, _PREFIX.get(itype, itype), self.stage)
                     nests = ([f"{inst}.src", f"{inst}.dst"][-len(op.plates):]
                              if itype in TWO_POSITION_TYPES else [inst])
                 instr = self._ins(inst, op.params["op"], {"plates": bcs},
                                   own=op.params["seconds"])
                 label = f"{op.params['op']} {' '.join(bcs)}"
             elif op.kind == "thermocycle":
-                inst = self._numbered("thermocycler", "tc")
+                inst = self._numbered("thermocycler", "tc", self.stage)
                 nests = [inst]
                 bc = self.barcodes[op.plates[0]]
                 program = op.params["program"]

@@ -32,6 +32,7 @@ class Instrument:
     type: str
     slots: int | None = None
     reach: frozenset[str] | None = None     # arms: instruments it can reach (None = all)
+    stage: str | None = None                # station of a flow line (see Workflow.stage)
 
 
 @dataclass(frozen=True)
@@ -156,9 +157,11 @@ def parse_workcell(data: dict) -> Workcell:
             raise ConfigError(f"duplicate instrument id {iid!r}")
         if itype == "storage" and raw.get("slots") is None:
             raise ConfigError(f"storage {iid!r} needs 'slots'")
-        reach = raw.get("reach")
+        reach, stage = raw.get("reach"), raw.get("stage")
+        if stage is not None and not isinstance(stage, str):
+            raise ConfigError(f"instrument {iid!r}: stage must be a string, got {stage!r}")
         instruments[iid] = Instrument(iid, itype, raw.get("slots"),
-                                      frozenset(reach) if reach is not None else None)
+                                      frozenset(reach) if reach is not None else None, stage)
 
     plates: dict[str, Plate] = {}
 

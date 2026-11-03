@@ -38,6 +38,7 @@ class Op:
     plates: tuple[str, ...]
     params: dict
     after: tuple[str, ...]
+    stage: str | None = None
 
 
 @dataclass
@@ -55,6 +56,13 @@ class Workflow:
         self.plates: dict[str, PlateDecl] = {}
         self.ops: list[Op] = []
         self._stored: set[str] = set()
+        self._stage: str | None = None
+
+    def stage(self, name: str | None) -> None:
+        """Mark the ops that follow as belonging to station `name` of a flow line: in a
+        workcell whose instruments carry `stage:` labels they bind only to that station's
+        instruments, and `store` goes to its storage. Ignored by workcells without stages."""
+        self._stage = name
 
     def new_plate(self, type: str) -> NewPlate:
         return NewPlate(type)
@@ -90,7 +98,8 @@ class Workflow:
         for a in after_ids:
             if a not in known:
                 raise ValueError(f"unknown after op id {a!r}")
-        op = Op(f"op{len(self.ops)}", kind, tuple(h.id for h in plates), params, after_ids)  # type: ignore[arg-type]
+        op = Op(f"op{len(self.ops)}", kind, tuple(h.id for h in plates), params, after_ids,  # type: ignore[arg-type]
+                self._stage)
         self.ops.append(op)
         return op.id
 

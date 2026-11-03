@@ -35,19 +35,25 @@ def libprep_capture(w: Workflow, batch: int):
     def spin(p):
         w.step("centrifuge", "spin", p, seconds=30)
 
+    # w.stage(...) marks the stations of a flow line (examples/make_libprep_flow.py); other
+    # workcells ignore them.
     # --- library prep (Illumina DNA Prep) ---
+    w.stage("start")
     w.stamp(g, lib, seconds=60)                              # 30 µl gDNA
     w.store(g)
     w.stamp(tag, lib, seconds=60)                            # eBLT + TB1
     w.store(tag)
+    w.stage("tag")
     w.step(HS, "shake", lib, seconds=60)
     seal(lib)
     w.thermocycle(lib, program=TAG)
     peel(lib)
+    w.stage("stop")
     w.stamp(stp, lib, seconds=60)                            # stop buffer
     w.store(stp)
     w.step(HS, "shake_incubate", lib, seconds=360)           # mix 1 min, RT 5 min
     w.step(LH, "magnet_wash", lib, seconds=720)              # post-tagmentation cleanup, 2x TWB
+    w.stage("index")
     w.stamp(pcr, lib, seconds=60)                            # EPM master mix
     w.store(pcr)
     w.stamp(idx, lib, seconds=60)                            # index adapters
@@ -55,30 +61,37 @@ def libprep_capture(w: Workflow, batch: int):
     w.step(HS, "shake", lib, seconds=60)
     spin(lib)
     seal(lib)
+    w.stage("pcr")
     w.thermocycle(lib, program=BLT_PCR)
     peel(lib)
     spin(lib)
+    w.stage("cleanup")
     w.step(LH, "bead_cleanup", lib, cln, seconds=1800)       # double-sided cleanup to new plate
     w.store(lib)
     w.step("plate_reader", "quantify", cln, seconds=300)
 
     # --- hybrid capture (IDT xGen) ---
+    w.stage("pool")
     w.step(LH, "pool", cln, cap, seconds=900)                # 8 x 500 ng -> 12 pools + blockers
     w.store(cln)                                             # library archive
     w.step("vacuum_concentrator", "dry", cap, seconds=2700)
+    w.stage("hyb")
     w.step(LH, "resuspend", cap, seconds=600)                # hyb buffer + probes
     seal(cap)
     spin(cap)
     w.thermocycle(cap, program=HYB)                          # 95 °C 30 s, 65 °C 4 h
     peel(cap)
+    w.stage("capture")
     w.step(LH, "add_beads", cap, seconds=600)                # washed streptavidin beads
     w.step(HS, "capture", cap, seconds=2700)                 # 65 °C 45 min, mixing
     w.step(HS, "heated_wash", cap, seconds=600)              # 2 x 5 min at 65 °C
+    w.stage("wash")
     w.step(LH, "rt_washes", cap, seconds=900)                # washes I-III on the magnet
     w.step(LH, "add_pcr_mix", cap, seconds=180)
     seal(cap)
     w.thermocycle(cap, program=CAPTURE_PCR)
     peel(cap)
+    w.stage("final")
     w.step(LH, "bead_cleanup", cap, seconds=1200)            # 1.5x beads in place
     w.step("plate_reader", "quantify", cap, seconds=300)
 

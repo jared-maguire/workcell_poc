@@ -137,6 +137,47 @@ The run takes about 45 s in all. Report (13 MB, takes a few seconds to load): ht
 
 A–C keep up with 105 batches a day, and latency doesn't grow through the day. D is past the edge: it still finishes, but queues build up under noise. B is the lean choice with headroom. Leaner cells recover more slowly from overruns. With noise, the slowest batch takes 13–25 h. That is the noise model, not the scheduler: a 4 h hybridization drawn 2–5× long.
 
+### The same day on a flow line
+
+The alternative to separate lines is one flow line, an assembly line in process order. `examples/make_libprep_flow.py` generates `examples/libprep_flow.yaml`.
+- **Stations:** one per stage of the protocol, 11 in all: start, tag, stop, index, pcr, cleanup, pool, hyb, capture, wash, final. Each has its own arm and a handoff spot to the next station.
+- **Every batch passes every station**, and plates only move forward, one station at a time. Pre-amp is upstream of "pcr" and post-amp downstream.
+- **Pooling:** each station is shared by all batches. The hybridization station is a bank of 20 thermocyclers.
+- **Stages:** the workflow marks its stations with `w.stage("hyb")` etc. In a workcell whose instruments carry `stage:` labels, a step binds only to its station's instruments, and `store` goes to its station's storage. Workcells without stages ignore the marks, so the same `libprep_capture.py` runs on both layouts.
+
+```
+.venv/bin/python -m workcell live examples/libprep_flow.yaml examples/libprep_10k.py --release-every 823 --seed 0
+```
+```
+seed: 0
+forecast makespan: 33:32:58
+actual makespan:   35:27:16
+idle hold: limit 300s, parks 470, violations 31 (worst 467s)
+completed: 105/105
+latency: mean 11:21:04, max 24:04:59
+dispatch: 10.53 s
+```
+
+Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_flow_live.html (14 MB).
+
+**Compared with 4 lines (configuration C above), measured 2026-11-02.** Both keep up with the day at about the same latency, and the hardware is roughly a wash:
+
+| | 4 lines (C) | flow line |
+|---|---|---|
+| thermocyclers | 28 | 28 |
+| liquid handlers | 16 | 14 |
+| heated shakers | 8 | 8 |
+| vacuum concentrators | 4 | 5 |
+| plate readers | 8 | 2 |
+| head stampers | 4 | 3 |
+| arms | 8 | 11 |
+| storages / scanners / hotels | 4 / 4 / 8 | 6 / 6 / 11 |
+
+- **The flow line saves** the instruments a line owns but barely uses: readers, stampers, a few liquid handlers.
+- **It costs** an arm per station. The arms are almost idle (under 15% busy each), so a real flow line would move plates on a conveyor and share an arm across several short stations.
+- **Its real advantages aren't in the counts:** plates never go back upstream, which is the pre-amp/post-amp rule built in, and every batch draws on the whole bank at each station.
+- **Sizing it** was arithmetic: about (time per batch on a station's instrument type ÷ 823 s), plus slack. One trim too far showed exactly where: with 2 liquid handlers at "final", batches queued there about 13 h each.
+
 ## Quickstart
 
 ```
