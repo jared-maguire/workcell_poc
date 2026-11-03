@@ -33,12 +33,12 @@ def _minutes(intervals) -> set[int]:
 
 
 def blocked_minutes(plan: Plan, trace: Trace, batch: CompiledBatch) -> dict[str, int]:
-    """Per working instrument (not arm/storage/hotel): minutes during which a plate rests in
+    """Per working instrument (not arm/storage/hotel/conveyor): minutes during which a plate rests in
     one of its nests while no block is using the instrument. Stays follow Ruling R4 on the
     trace's actual start times; a plate still there at the end stays until trace.end_time."""
     wc = batch.workcell
     owners = {n.id: n.instrument for n in wc.nests().values()
-              if wc.instruments[n.instrument].type not in ("storage", "hotel")}
+              if wc.instruments[n.instrument].type not in ("storage", "hotel", "conveyor")}
     actual = replace(plan, start={bid: s for bid, (s, _) in trace.spans.items()})
     occupied: dict[str, list[tuple[int, int]]] = {i: [] for i in dict.fromkeys(owners.values())}
     for _, nest, arrive, leave in plate_stays(actual, batch.initial_locations()):

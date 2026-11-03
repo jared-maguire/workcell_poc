@@ -117,8 +117,7 @@ def transport_instructions(workcell: Workcell, plate: str, src: str, dst: str,
     def ins(instrument: str, op: str, args: dict | None = None) -> Instruction:
         return Instruction(instrument, op, args or {}, _duration(workcell, types[instrument], op, times))
 
-    out = [ins(name, "check_status") for name in dict.fromkeys((src_owner, arm, dst_owner))
-           if types[name] != "conveyor"]           # never locked (see Block.instruments)
+    out = [ins(name, "check_status") for name in dict.fromkeys((src_owner, arm, dst_owner))]
     if types[src_owner] == "storage":
         out.append(ins(src_owner, "retrieve", {"plate": plate}))
     doors = [n for n in dict.fromkeys((src_owner, dst_owner)) if types[n] == "thermocycler"]

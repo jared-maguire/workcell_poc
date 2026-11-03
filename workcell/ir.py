@@ -58,7 +58,8 @@ class Block:
     @property
     def instruments(self) -> set[str]:
         """The block's lock set (with its plates). A conveyor carrying a plate is not locked:
-        other plates ride it too, up to its nest capacity."""
+        other plates ride it too, up to its nest capacity. Putting a plate on or taking one
+        off does lock it, so the two never start together on a full belt."""
         return {i.instrument for i in self.instructions if i.op not in UNLOCKED_OPS}
 
     def bind(self, bindings: dict[str, str]) -> Block:

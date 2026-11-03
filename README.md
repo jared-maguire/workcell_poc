@@ -153,32 +153,32 @@ The alternative to separate lines is one flow line, an assembly line in process 
 ```
 seed: 0
 forecast makespan: 33:33:52
-actual makespan:   34:07:55
-idle hold: limit 300s, parks 338, violations 46 (worst 636s)
+actual makespan:   34:05:42
+idle hold: limit 300s, parks 313, violations 30 (worst 629s)
 completed: 105/105
-latency: mean 10:32:19, max 12:56:34
-dispatch: 8.91 s
+latency: mean 10:29:31, max 12:53:10
+dispatch: 10.68 s
 ```
 
 Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_flow_live.html (14 MB). The 3D view shows plates riding the belts.
 
 **Conveyors** (`type: conveyor`, with `slots`, `seconds` and `to`, the arm it carries plates to):
 - A move across one is three blocks: put on (upstream arm), `convey` (locks only the plate), take off (downstream arm).
-- A belt is never locked. Several plates ride at once, up to `slots`.
+- The ride locks nothing, so several plates ride at once, up to `slots`. Putting a plate on or taking one off locks the belt for that one arm move, so the two never collide on a full belt.
 - Time on a belt is not an idle hold, and plates are never parked across one.
 - Belts run one way, so no route goes back upstream. Two-way belts deadlocked in testing: a plate riding toward a busy instrument met a plate on that instrument waiting to ride back.
 - `--belt-seconds 0` joins the zones with handoff spots instead, where a move between zones holds both arms.
 
-**How many arms?** Latency is measured from arrival, seeds 0 and 1; violations are for seed 0. Measured 2026-11-02.
+**How many arms?** Latency is measured from arrival, seeds 0 and 1; violations are for seed 0. Measured 2026-11-03.
 
 | layout | arms | median latency | 90th percentile | idle-hold violations (worst) |
 |---|---|---|---|---|
 | 4 separate lines (as generated) | 8 | 10.3 / 10.2 h | 11.9 / 10.8 h | 50 (555 s) |
-| flow line, conveyors (the default) | 6 | 10.5 / 10.5 h | 11.3 / 11.3 h | 46 (636 s) |
+| flow line, conveyors (the default) | 6 | 10.4 / 10.5 h | 11.1 / 11.3 h | 30 (629 s) |
 | flow line, handoff spots | 6 | 11.0 / 10.5 h | 12.7 / 11.0 h | 57 (654 s) |
-| flow line, conveyors | 5 | 10.9 / 10.8 h | 12.0 / 11.8 h | 58 (558 s) |
-| flow line, conveyors | 4 | 11.0 / 10.7 h | 12.4 / 12.3 h | 122 (895 s) |
-| flow line, conveyors | 3 | 14.2 / 14.9 h | 16.9 / 16.6 h | 272 (1264 s) |
+| flow line, conveyors | 5 | 11.0 / 10.8 h | 12.0 / 11.8 h | 65 (800 s) |
+| flow line, conveyors | 4 | 11.0 / 10.8 h | 12.3 / 12.2 h | 131 (928 s) |
+| flow line, conveyors | 3 | 14.3 / 14.6 h | 16.9 / 16.7 h | 279 (985 s) |
 
 - **Conveyors let the line share arms.** One arm per station left each under 15% busy. With belts, 6 arms match the separate lines, 4 still keep up with the day, and 3 fall behind.
 - **Without belts, 6 arms do noticeably worse.** A move between zones holds both arms.

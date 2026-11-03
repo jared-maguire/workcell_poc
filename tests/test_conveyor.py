@@ -71,10 +71,10 @@ def test_move_across_is_put_convey_take():
     blocks = b.workflows[0].blocks
     k = next(i for i, blk in enumerate(blocks) if blk.kind == "convey")
     put, convey, take = blocks[k - 1], blocks[k], blocks[k + 1]
-    assert [m.dst for m in put.moves] == ["belt"] and put.instruments == {"arm_a", "lh_a"}
+    assert [m.dst for m in put.moves] == ["belt"] and put.instruments == {"arm_a", "lh_a", "belt"}
     assert [(i.instrument, i.op, i.duration) for i in convey.instructions] == [("belt", "convey", 200)]
     assert convey.instruments == set() and convey.moves == [] and convey.deps == [put.id]
-    assert [m.src for m in take.moves] == ["belt"] and take.instruments == {"arm_b", "lh_b"}
+    assert [m.src for m in take.moves] == ["belt"] and take.instruments == {"arm_b", "lh_b", "belt"}
     assert take.deps == [convey.id]
 
 
@@ -135,3 +135,43 @@ def test_other_planners_handle_belts(mode):
     assert p.finished and validate_plan(p, b) == []
     tr = execute(p, b)
     assert tr.alarm is None and tr.lock_waits == []
+
+
+def test_put_on_full_belt_cannot_meet_take_off():
+    """Occupancy ends at the START of the removing block, so a put-on may start on a full belt
+    the moment a take-off does. If the put-on's arm move ran first (a take-off into a
+    thermocycler opens the door first), the world would find the belt full. Putting on and
+    taking off both lock the belt, so the validator rejects that timing."""
+    import dataclasses
+
+    @workflow(times=TIMES)
+    def to_tc(w, i):
+        p = w.own(f"P{i}")
+        w.stage("a")
+        w.step("liquid_handler", "mix", p, seconds=5)
+        w.stage("b")
+        w.thermocycle(p, program=[(95, 1)])
+        w.store(p)
+
+    data = {"instruments": [
+        {"id": "arm_a", "type": "arm", "reach": ["store_a", "scan_a", "lh_a", "belt"]},
+        {"id": "arm_b", "type": "arm", "reach": ["tc_b", "store_b", "belt"]},
+        {"id": "belt", "type": "conveyor", "slots": 1, "seconds": 500, "to": "arm_b"},
+        {"id": "store_a", "type": "storage", "slots": 5, "stage": "a"},
+        {"id": "scan_a", "type": "barcode_scanner", "stage": "a"},
+        {"id": "lh_a", "type": "liquid_handler", "stage": "a"},
+        {"id": "tc_b", "type": "thermocycler", "stage": "b"},
+        {"id": "store_b", "type": "storage", "slots": 5, "stage": "b"}],
+        "plates": [{"barcode": f"P{i}", "type": "sample", "location": "store_a"} for i in range(2)],
+        "durations": {"default": 1, "check_status": 0}}
+    b = compile_batch(parse_workcell(data), [to_tc(i) for i in range(2)])
+    p = plan_dispatch(b, release={"to_tc-0": 2000})        # P1 rides first; P0's id sorts first
+    take = next(x for x in b.workflows[1].blocks if any(m.src == "belt" for m in x.moves))
+    put = next(x for x in b.workflows[0].blocks if any(m.dst == "belt" for m in x.moves))
+    assert "belt" in take.instruments and "belt" in put.instruments
+    start, k = dict(p.start), b.workflows[1].blocks.index(take)
+    shift = start[put.id] - start[take.id]
+    for x in b.workflows[1].blocks[k:]:                    # take P1 off as P0 is put on
+        start[x.id] += shift
+    q = dataclasses.replace(p, start=start)
+    assert any("belt" in e for e in validate_plan(q, b))

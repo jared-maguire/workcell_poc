@@ -1,8 +1,7 @@
 """Generate a flow-line library prep workcell: one station per stage of
-examples/libprep_capture.py (its w.stage marks), in process order, each with its own arm, joined
-to the next station by a handoff spot. Plates only move forward, one station at a time; every
-station is shared by all batches. One arm serves several neighbouring stations (ZONES), and
-arm zones meet at handoff spots. Sized for about 105 batches of 96 samples a day (one batch
+examples/libprep_capture.py (its w.stage marks), in process order. Plates only move forward,
+one station at a time; every station is shared by all batches. One arm serves several
+neighbouring stations (ZONES), and each zone feeds the next by a one-way conveyor. Sized for about 105 batches of 96 samples a day (one batch
 every 823 s): a station has about (time a batch spends on a type / 823 s) instruments, plus
 slack. Trimmed by running the 10k day: one fewer liquid handler at "final" made batches queue
 there for about 13 h each.
@@ -53,10 +52,11 @@ EMPTIES = ["start", "cleanup", "pool", "final"]
 # for BELT_SECONDS without holding either arm, and the downstream arm takes it off
 BELT_SECONDS, BELT_SLOTS = 30, 6
 
-# arm zones: the stations each arm serves, in order; zones meet at handoffs. One arm per
+# arm zones: the stations each arm serves, in order; zones are joined by conveyors. One arm per
 # station left each under 15% busy. Storage stations load their arm most (a 60 s retrieve or
-# store holds it), so they get fewer neighbours. On the 10k day (seed 0): 11 arms 31 idle-hold
-# violations, these 6 arms 57, 5 arms 95, 4 arms 178; latency rose 10 min per arm removed.
+# store holds it), so they get fewer neighbours. On the 10k day (seed 0), idle-hold violations: these
+# 6 arms 30 (57 with handoffs instead of belts), 5 arms 65, 4 arms 131, 3 arms 279 (falls
+# behind).
 ZONES = [["start", "tag"], ["stop"], ["index", "pcr"], ["cleanup", "pool"], ["hyb", "capture"],
          ["wash", "final"]]
 

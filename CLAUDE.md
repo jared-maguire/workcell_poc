@@ -54,7 +54,7 @@ Planners never touch the simulator or report; a `Plan` (bound blocks + start tim
 - **Separate groups:** arms need not all connect. `Workcell.group(instrument)` is the set connected through arms and handoffs. A workflow's variable candidates and its parking spots are limited to its plates' group; plates starting in two groups is a `CompileError`.
 - **Conveyors** (`type: conveyor`; needs `slots`, `seconds` and `to`, the downstream arm). Like a handoff, it may be reached by two arms (exactly two, one of them `to`).
   - The compiler splits a move across a belt into put on → `convey` → take off (`_WorkflowCompiler._transport`/`_belt`). `transport_instructions` refuses a route that crosses one.
-  - The `convey` op is in `ir.UNLOCKED_OPS`, so `Block.instruments` (the lock set) leaves the belt out. Moves don't `check_status` a belt. Capacity is the belt nest's `slots`, enforced like any nest.
+  - The `convey` op is in `ir.UNLOCKED_OPS`, so `Block.instruments` (the lock set) leaves the belt out of the ride. Putting on and taking off do lock it: occupancy ends at the START of the removing block, so an unlocked put-on could start on a full belt as a take-off does and find it still full. Capacity is the belt nest's `slots`, enforced like any nest.
   - Routes cross belts only toward `to`: one way. Two-way belts deadlocked.
   - Belts are passive (no idle limit, never glow). `parking_spots` skips spots across a belt or unreachable upstream.
 - **Stages (flow lines):**
@@ -71,7 +71,7 @@ Planners never touch the simulator or report; a `Plan` (bound blocks + start tim
 
 ## Invariants (break these and the planners, validator, and executor disagree)
 
-- **Blocks:** the compiler groups instructions into blocks that start and end with every plate resting in a nest. A block's lock set = `block.instruments` (derived from its instructions, minus `UNLOCKED_OPS` such as a conveyor's `convey`; every block `check_status`es each instrument whose nest it touches, conveyors excepted) ∪ `block.plates`. The compiler never emits acquire/release; the executor locks all-or-nothing.
+- **Blocks:** the compiler groups instructions into blocks that start and end with every plate resting in a nest. A block's lock set = `block.instruments` (derived from its instructions, minus `UNLOCKED_OPS` such as a conveyor's `convey`; every block `check_status`es each instrument whose nest it touches) ∪ `block.plates`. The compiler never emits acquire/release; the executor locks all-or-nothing.
 - **Block ids** are `f"{workflow_id}/{n:02d}"` in compile order; workflow ids are `f"{name}-{batch_index}"`. Tests hard-code PCR ids `pcr-0/00..15`.
 - **Instrument variables** are `?name` / `?name.suffix` (e.g. `?tc0`, `?stamp.src`); single-candidate vars are substituted at compile time. Nest ids: `<instrument>` or `stamp1.src`/`stamp1.dst`.
 - **Occupancy:** a plate occupies a nest from the START of the block that places it to the START of the block that removes it (initial stays from t=0). `plan.plate_stays` is the one definition — validator, greedy, CP-SAT, and stats all use it. (The spec originally said "from the END"; that let a plate be placed onto an occupied nest.)
