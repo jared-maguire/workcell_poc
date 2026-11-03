@@ -56,7 +56,7 @@ Planners never touch the simulator or report; a `Plan` (bound blocks + start tim
   - `w.stage(name)` marks the ops that follow. Instruments may carry `stage:` labels.
   - When the workflow's group has any stage labels, a marked op binds only to its stage's instruments, `store` goes to its stage's storage, a plate does not "stay" on an instrument of another stage, and the stamper variable is per stage.
   - Unstaged workcells ignore the marks (`libprep_capture.py` is marked and runs on both).
-  - Demo: `examples/make_libprep_flow.py` → `libprep_flow.yaml`, 11 stations, run with `libprep_10k.py --release-every 823`. Each batch's plates start in the storage of the station that first uses them; empties are allocated in plate order (lib, cln, cap, seq).
+  - Demo: `examples/make_libprep_flow.py` → `libprep_flow.yaml`, 11 stations under 6 arms (`ZONES`; `--arm-per-station` for 11), run with `libprep_10k.py --release-every 823`. Each batch's plates start in the storage of the station that first uses them; empties are allocated in plate order (lib, cln, cap, seq).
   - Example: `examples/make_libprep_lines.py` generates `libprep_10k.yaml` (4 separate lines) for `libprep_10k.py` (105 batches).
   - Run it with `live --release-every 823`.
   - Linking lines through handoffs hurt: plates drifted across lines and needed multi-arm relays.

@@ -133,5 +133,7 @@ def test_flow_line_example_moves_forward_only():
             hops[e.block] = (hops.get(e.block, (e.args["src"],))[0], e.args["dst"])
     assert any(len({wc.instruments[wc.nest_owner(n)].stage for n in h}) == 2 for h in hops.values())
     for block, (src, dst) in hops.items():
+        if "hotel" in {wc.instruments[wc.nest_owner(n)].type for n in (src, dst)}:
+            continue              # parking: the zone's own hotel, same arm
         a, b = (order.index(wc.instruments[wc.nest_owner(n)].stage) for n in (src, dst))
         assert 0 <= b - a <= 1, (block, src, dst)

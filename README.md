@@ -140,7 +140,8 @@ A–C keep up with 105 batches a day, and latency doesn't grow through the day. 
 ### The same day on a flow line
 
 The alternative to separate lines is one flow line, an assembly line in process order. `examples/make_libprep_flow.py` generates `examples/libprep_flow.yaml`.
-- **Stations:** one per stage of the protocol, 11 in all: start, tag, stop, index, pcr, cleanup, pool, hyb, capture, wash, final. Each has its own arm and a handoff spot to the next station.
+- **Stations:** one per stage of the protocol, 11 in all: start, tag, stop, index, pcr, cleanup, pool, hyb, capture, wash, final.
+- **Arms:** 6, each serving one to two neighbouring stations, with a handoff spot to the next arm's zone.
 - **Every batch passes every station**, and plates only move forward, one station at a time. Pre-amp is upstream of "pcr" and post-amp downstream.
 - **Pooling:** each station is shared by all batches. The hybridization station is a bank of 20 thermocyclers.
 - **Stages:** the workflow marks its stations with `w.stage("hyb")` etc. In a workcell whose instruments carry `stage:` labels, a step binds only to its station's instruments, and `store` goes to its station's storage. Workcells without stages ignore the marks, so the same `libprep_capture.py` runs on both layouts.
@@ -150,17 +151,17 @@ The alternative to separate lines is one flow line, an assembly line in process 
 ```
 ```
 seed: 0
-forecast makespan: 33:32:58
-actual makespan:   35:27:16
-idle hold: limit 300s, parks 470, violations 31 (worst 467s)
+forecast makespan: 33:33:26
+actual makespan:   36:02:18
+idle hold: limit 300s, parks 518, violations 57 (worst 654s)
 completed: 105/105
-latency: mean 11:21:04, max 24:04:59
-dispatch: 10.53 s
+latency: mean 11:31:32, max 24:12:12
+dispatch: 9.10 s
 ```
 
 Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_flow_live.html (14 MB).
 
-**Compared with 4 lines (configuration C above), measured 2026-11-02.** Both keep up with the day at about the same latency, and the hardware is roughly a wash:
+**Compared with 4 lines (configuration C above), measured 2026-11-02.** Both keep up with the day at about the same latency. The flow line needs somewhat less hardware, chiefly 2 fewer arms and 6 fewer plate readers:
 
 | | 4 lines (C) | flow line |
 |---|---|---|
@@ -170,11 +171,21 @@ Report: https://jared-maguire.github.io/workcell_poc/docs/reports/libprep_flow_l
 | vacuum concentrators | 4 | 5 |
 | plate readers | 8 | 2 |
 | head stampers | 4 | 3 |
-| arms | 8 | 11 |
-| storages / scanners / hotels | 4 / 4 / 8 | 6 / 6 / 11 |
+| arms | 8 | 6 |
+| storages / scanners / hotels | 4 / 4 / 8 | 6 / 6 / 6 |
 
 - **The flow line saves** the instruments a line owns but barely uses: readers, stampers, a few liquid handlers.
-- **It costs** an arm per station. The arms are almost idle (under 15% busy each), so a real flow line would move plates on a conveyor and share an arm across several short stations.
+- **It costs** more storages and scanners: one at each station that adds or archives plates.
+- **Fewer arms means more waiting.** With one arm per station, each was under 15% busy. Sharing arms across stations trades arms for idle holds, since plates wait for a busy arm. Storage stations load an arm most, because a 60 s retrieve or store holds it.
+
+  | arms | mean latency | idle-hold violations (worst) |
+  |---|---|---|
+  | 11 (one per station) | 11:21 | 31 (467 s) |
+  | 6 (the default) | 11:32 | 57 (654 s) |
+  | 5 | 11:37 | 95 (655 s) |
+  | 4 | 11:42 | 178 (940 s) |
+  | *4 lines, 8 arms* | *10:58* | *50 (555 s)* |
+
 - **Its real advantages aren't in the counts:** plates never go back upstream, which is the pre-amp/post-amp rule built in, and every batch draws on the whole bank at each station.
 - **Sizing it** was arithmetic: about (time per batch on a station's instrument type ÷ 823 s), plus slack. One trim too far showed exactly where: with 2 liquid handlers at "final", batches queued there about 13 h each.
 

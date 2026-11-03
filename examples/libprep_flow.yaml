@@ -6,19 +6,13 @@ instruments:
   - store_start
   - scan_start
   - stamp_start
-  - hotel_start
-  - ho1
-- id: arm_tag
-  type: arm
-  reach:
   - hs_tag
   - seal_tag
   - tc_tag1
   - tc_tag2
   - peel_tag
-  - hotel_tag
+  - hotel_start
   - ho1
-  - ho2
 - id: arm_stop
   type: arm
   reach:
@@ -29,8 +23,8 @@ instruments:
   - lh_stop1
   - lh_stop2
   - hotel_stop
+  - ho1
   - ho2
-  - ho3
 - id: arm_index
   type: arm
   reach:
@@ -40,21 +34,15 @@ instruments:
   - hs_index
   - spin_index
   - seal_index
-  - hotel_index
-  - ho3
-  - ho4
-- id: arm_pcr
-  type: arm
-  reach:
   - tc_pcr1
   - tc_pcr2
   - tc_pcr3
   - tc_pcr4
   - peel_pcr
   - spin_pcr
-  - hotel_pcr
-  - ho4
-  - ho5
+  - hotel_index
+  - ho2
+  - ho3
 - id: arm_cleanup
   type: arm
   reach:
@@ -64,12 +52,6 @@ instruments:
   - lh_cleanup2
   - lh_cleanup3
   - read_cleanup
-  - hotel_cleanup
-  - ho5
-  - ho6
-- id: arm_pool
-  type: arm
-  reach:
   - store_pool
   - scan_pool
   - lh_pool1
@@ -79,9 +61,9 @@ instruments:
   - dry_pool3
   - dry_pool4
   - dry_pool5
-  - hotel_pool
-  - ho6
-  - ho7
+  - hotel_cleanup
+  - ho3
+  - ho4
 - id: arm_hyb
   type: arm
   reach:
@@ -109,21 +91,15 @@ instruments:
   - tc_hyb19
   - tc_hyb20
   - peel_hyb
-  - hotel_hyb
-  - ho7
-  - ho8
-- id: arm_capture
-  type: arm
-  reach:
   - lh_capture
   - hs_capture1
   - hs_capture2
   - hs_capture3
   - hs_capture4
   - hs_capture5
-  - hotel_capture
-  - ho8
-  - ho9
+  - hotel_hyb
+  - ho4
+  - ho5
 - id: arm_wash
   type: arm
   reach:
@@ -133,12 +109,6 @@ instruments:
   - tc_wash1
   - tc_wash2
   - peel_wash
-  - hotel_wash
-  - ho9
-  - ho10
-- id: arm_final
-  type: arm
-  reach:
   - store_final
   - scan_final
   - lh_final1
@@ -146,8 +116,8 @@ instruments:
   - lh_final3
   - read_final
   - seal_final
-  - hotel_final
-  - ho10
+  - hotel_wash
+  - ho5
 - id: ho1
   type: handoff
   slots: 2
@@ -163,21 +133,6 @@ instruments:
 - id: ho5
   type: handoff
   slots: 2
-- id: ho6
-  type: handoff
-  slots: 2
-- id: ho7
-  type: handoff
-  slots: 2
-- id: ho8
-  type: handoff
-  slots: 2
-- id: ho9
-  type: handoff
-  slots: 2
-- id: ho10
-  type: handoff
-  slots: 2
 - id: store_start
   type: storage
   stage: start
@@ -187,10 +142,6 @@ instruments:
   stage: start
 - id: stamp_start
   type: head_stamper
-  stage: start
-- id: hotel_start
-  type: hotel
-  slots: 10
   stage: start
 - id: hs_tag
   type: heated_shaker
@@ -207,10 +158,9 @@ instruments:
 - id: peel_tag
   type: plate_peeler
   stage: tag
-- id: hotel_tag
+- id: hotel_start
   type: hotel
-  slots: 10
-  stage: tag
+  slots: 20
 - id: store_stop
   type: storage
   stage: stop
@@ -233,7 +183,6 @@ instruments:
 - id: hotel_stop
   type: hotel
   slots: 10
-  stage: stop
 - id: store_index
   type: storage
   stage: index
@@ -253,10 +202,6 @@ instruments:
 - id: seal_index
   type: plate_sealer
   stage: index
-- id: hotel_index
-  type: hotel
-  slots: 10
-  stage: index
 - id: tc_pcr1
   type: thermocycler
   stage: pcr
@@ -275,10 +220,9 @@ instruments:
 - id: spin_pcr
   type: centrifuge
   stage: pcr
-- id: hotel_pcr
+- id: hotel_index
   type: hotel
-  slots: 10
-  stage: pcr
+  slots: 20
 - id: store_cleanup
   type: storage
   stage: cleanup
@@ -297,10 +241,6 @@ instruments:
   stage: cleanup
 - id: read_cleanup
   type: plate_reader
-  stage: cleanup
-- id: hotel_cleanup
-  type: hotel
-  slots: 10
   stage: cleanup
 - id: store_pool
   type: storage
@@ -330,10 +270,9 @@ instruments:
 - id: dry_pool5
   type: vacuum_concentrator
   stage: pool
-- id: hotel_pool
+- id: hotel_cleanup
   type: hotel
-  slots: 10
-  stage: pool
+  slots: 20
 - id: lh_hyb
   type: liquid_handler
   stage: hyb
@@ -406,10 +345,6 @@ instruments:
 - id: peel_hyb
   type: plate_peeler
   stage: hyb
-- id: hotel_hyb
-  type: hotel
-  slots: 10
-  stage: hyb
 - id: lh_capture
   type: liquid_handler
   stage: capture
@@ -428,10 +363,9 @@ instruments:
 - id: hs_capture5
   type: heated_shaker
   stage: capture
-- id: hotel_capture
+- id: hotel_hyb
   type: hotel
-  slots: 10
-  stage: capture
+  slots: 20
 - id: lh_wash1
   type: liquid_handler
   stage: wash
@@ -449,10 +383,6 @@ instruments:
   stage: wash
 - id: peel_wash
   type: plate_peeler
-  stage: wash
-- id: hotel_wash
-  type: hotel
-  slots: 10
   stage: wash
 - id: store_final
   type: storage
@@ -476,10 +406,9 @@ instruments:
 - id: seal_final
   type: plate_sealer
   stage: final
-- id: hotel_final
+- id: hotel_wash
   type: hotel
-  slots: 10
-  stage: final
+  slots: 20
 durations:
   default: 1
   check_status: 0
